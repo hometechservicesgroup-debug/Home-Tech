@@ -319,7 +319,10 @@ function renderBookings(bookings, expandedOrders = new Set()){
 }
 
 function renderLocationCard(label, point){
-  const lat = Number(point && point.lat), lng = Number(point && point.lng);
+  if(!point || point.lat == null || point.lng == null){
+    return `<div class="location-card"><strong>${label}:</strong> ${label === 'Partner live location' ? 'Not shared yet. The partner must start location sharing for this booking.' : 'Not shared at booking time.'}</div>`;
+  }
+  const lat = Number(point.lat), lng = Number(point.lng);
   if(!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lng) || lng < -180 || lng > 180){
     return `<div class="location-card"><strong>${label}:</strong> ${label === 'Partner live location' ? 'Not shared yet. The partner must start location sharing for this booking.' : 'Not shared at booking time.'}</div>`;
   }
