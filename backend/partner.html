@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="api-base" content="">
+<title>Hometake Partner Dashboard</title>
+<style>
+  :root{ --bg:#05060b; --card:#0f1424; --line:rgba(255,255,255,0.1); --ink:#f4f6fb; --ink2:#9aa4b2; --indigo:#6d7cff; --green:#25D366; --red:#ef4444; }
+  *{box-sizing:border-box;}
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,system-ui,sans-serif; min-height:100vh; }
+  .center{ display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:20px; padding:28px; max-width:380px; width:100%; }
+  h1{ font-size:20px; margin:0 0 4px; }
+  h2{ font-size:15px; margin:0 0 6px; }
+  p.sub{ color:var(--ink2); font-size:13px; margin:0 0 20px; }
+  label{ font-size:12px; color:var(--ink2); display:block; margin-bottom:6px; }
+  input,select{ width:100%; background:rgba(255,255,255,0.04); border:1px solid var(--line); color:var(--ink); border-radius:10px; padding:12px 14px; font-size:14px; margin-bottom:14px; }
+  input:focus,select:focus{ outline:none; border-color:var(--indigo); }
+  button{ padding:12px 18px; border-radius:999px; border:none; font-size:13.5px; font-weight:600; cursor:pointer; }
+  .btn-primary{ background:var(--indigo); color:#fff; width:100%; padding:14px; }
+  .btn-ghost{ background:rgba(255,255,255,0.05); color:var(--ink); border:1px solid var(--line); }
+  .err{ color:var(--red); font-size:12.5px; margin-bottom:10px; display:none; }
+  .wrap{ max-width:800px; margin:0 auto; padding:24px; }
+  .topbar{ display:flex; justify-content:space-between; align-items:center; margin-bottom:24px; }
+  .pending{ text-align:center; padding:60px 20px; color:var(--ink2); }
+  .job{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:18px; margin-bottom:14px; }
+  .job .top{ display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+  .job h3{ margin:0; font-size:15px; }
+  .job .id{ font-size:11px; color:var(--ink2); }
+  .meta{ font-size:12.5px; color:var(--ink2); margin-bottom:12px; line-height:1.6; }
+  .row{ display:flex; gap:10px; flex-wrap:wrap; }
+  .status-badge{ font-size:11px; padding:4px 10px; border-radius:999px; background:rgba(109,124,255,0.15); color:var(--indigo); }
+  .empty{ text-align:center; color:var(--ink2); font-size:13px; padding:40px 0; }
+
+  /* 3D loading splash */
+  #appLoader{ position:fixed; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; background:var(--bg); transition:opacity .5s ease, visibility .5s ease; }
+  #appLoader.loaded{ opacity:0; visibility:hidden; pointer-events:none; }
+  .loader-scene{ width:60px; height:60px; perspective:400px; }
+  .loader-cube{ width:100%; height:100%; position:relative; transform-style:preserve-3d; animation:cubeSpin 2.6s infinite linear; }
+  .loader-cube .face{ position:absolute; width:60px; height:60px; background:linear-gradient(135deg, rgba(109,124,255,0.35), rgba(63,198,255,0.15)); border:1px solid rgba(109,124,255,0.5); border-radius:8px; }
+  .loader-cube .front{ transform: translateZ(30px); } .loader-cube .back{ transform: rotateY(180deg) translateZ(30px); }
+  .loader-cube .right{ transform: rotateY(90deg) translateZ(30px); } .loader-cube .left{ transform: rotateY(-90deg) translateZ(30px); }
+  .loader-cube .top{ transform: rotateX(90deg) translateZ(30px); } .loader-cube .bottom{ transform: rotateX(-90deg) translateZ(30px); }
+  @keyframes cubeSpin{ from{ transform: rotateX(0) rotateY(0); } to{ transform: rotateX(360deg) rotateY(360deg); } }
+  .loader-label{ margin-top:22px; font-size:12px; letter-spacing:.2em; text-transform:uppercase; color:var(--ink2); }
+</style>
+</head>
+<body>
+<div id="appLoader"><div class="loader-scene"><div class="loader-cube"><div class="face front"></div><div class="face back"></div><div class="face right"></div><div class="face left"></div><div class="face top"></div><div class="face bottom"></div></div></div><p class="loader-label">Home-Tech Partner</p></div>
+
+
+<div id="loginView" class="center">
+  <div class="card">
+    <h1>Partner Dashboard</h1>
+    <p class="sub">Log in with the email and password you set when you applied.</p>
+    <label>API Server URL</label>
+    <input id="apiBase" value="" placeholder="Uses this site's API by default">
+    <label>Email</label>
+    <input id="email" type="email" placeholder="you@example.com">
+    <label>Password</label>
+    <input id="password" type="password" placeholder="Password">
+    <p id="loginErr" class="err"></p>
+    <button class="btn-primary" onclick="login()">Log In</button>
+    <p style="font-size:12px; color:var(--ink2); text-align:center; margin-top:14px;">Forgot password? Reset it on the main Hometake Services website.</p>
+  </div>
+</div>
+
+<div id="pendingView" class="pending" style="display:none;">
+  <h2 style="color:var(--ink);">Application Pending</h2>
+  <p>Your partner account is not approved yet. Once admin approves you, your jobs will appear here.</p>
+  <button class="btn-ghost" onclick="location.reload()" style="margin-top:16px;">Refresh</button>
+</div>
+
+<div id="rechargeView" class="center" style="display:none;">
+  <div class="card">
+    <h1>Activate Your Account</h1>
+    <p class="sub">Recharge your wallet with at least ₹<span id="minRechargeLabel">500</span> to start receiving jobs. A commission is deducted from your wallet each time you're assigned a job.</p>
+    <div style="background:rgba(240,178,92,0.1); border:1px solid rgba(240,178,92,0.35); border-radius:12px; padding:14px; margin-bottom:16px;">
+      <p style="font-size:12.5px; color:var(--amber); font-weight:600; margin:0 0 8px;">⚠ Commission on every job</p>
+      <div id="commissionNotice1" style="font-size:12px; color:var(--ink2); line-height:1.9;"></div>
+    </div>
+    <div style="background:rgba(109,124,255,0.08); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:16px; text-align:center;">
+      <p style="font-size:12px; color:var(--ink2); margin:0 0 4px;">Current Balance</p>
+      <p id="rechargeBalance" style="font-size:24px; font-weight:700; margin:0;">₹0</p>
+    </div>
+    <label>Recharge Amount</label>
+    <input id="rechargeAmount" type="number" min="500" value="500">
+    <p id="rechargeErr" class="err"></p>
+    <button class="btn-primary" onclick="startRecharge()">Recharge Now</button>
+    <button class="btn-ghost" style="width:100%; margin-top:10px;" onclick="logout()">Logout</button>
+  </div>
+</div>
+
+<div id="dashView" class="wrap" style="display:none;">
+  <div class="topbar">
+    <div>
+      <h1 id="welcomeName" style="margin:0;">Dashboard</h1>
+      <p class="sub" style="margin:4px 0 0;">Jobs assigned to you</p>
+    </div>
+    <button class="btn-ghost" onclick="logout()">Logout</button>
+  </div>
+
+  <div class="job" style="margin-bottom:20px;">
+    <div class="top">
+      <div><p style="font-size:12px; color:var(--ink2); margin:0 0 2px;">Wallet Balance</p><h2 id="walletBalanceLabel" style="margin:0; font-size:22px;">₹0</h2></div>
+      <button class="btn-primary" style="padding:9px 16px;" onclick="document.getElementById('walletTopup').style.display = document.getElementById('walletTopup').style.display==='none'?'block':'none';">Add Money</button>
+    </div>
+    <div id="walletTopup" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
+      <div style="background:rgba(240,178,92,0.1); border:1px solid rgba(240,178,92,0.35); border-radius:12px; padding:14px; margin-bottom:14px;">
+        <p style="font-size:12.5px; color:var(--amber); font-weight:600; margin:0 0 8px;">⚠ Commission on every job</p>
+        <div id="commissionNotice2" style="font-size:12px; color:var(--ink2); line-height:1.9;"></div>
+      </div>
+      <label>Recharge Amount</label>
+      <input id="rechargeAmount2" type="number" min="500" value="500">
+      <p id="rechargeErr2" class="err"></p>
+      <button class="btn-primary" onclick="startRecharge(true)">Recharge Now</button>
+    </div>
+    <button onclick="toggleTxnHistory()" id="txnToggleBtn" style="background:none; border:none; color:var(--indigo); font-size:12.5px; padding:0; margin-top:10px; cursor:pointer;">View payment history</button>
+    <div id="txnHistory" style="display:none; margin-top:10px;"></div>
+  </div>
+
+  <div id="jobsList"></div>
+</div>
+
+<script>
+const STATUS_STAGES = ['Requested','Confirmed','Technician Assigned','On the Way','In Progress','Completed'];
+/* Set this to the SAME public Razorpay Key ID used in hometech-services.html — needed for wallet recharge. */
+let RAZORPAY_KEY_ID = '';
+let session = null; // { token, apiBase }
+let locationIntervals = {}; // bookingId -> intervalId
+const API_BASE_META = document.querySelector('meta[name="api-base"]');
+function defaultApiBase(){
+  const configured = window.HOMETakeApiBase || (API_BASE_META && API_BASE_META.content.trim());
+  const localHost = ['localhost','127.0.0.1'].includes(location.hostname);
+  const localStaticPage = location.protocol==='file:' || (localHost && ['','5500','5501','5502'].includes(location.port));
+  return (configured || (localStaticPage ? 'http://localhost:4000' : location.origin)).replace(/\/$/,'');
+}
+function escapeHtml(value){
+  return String(value ?? '').replace(/[&<>"']/g, char=>({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
+}
+
+function showErr(id, msg){ const e=document.getElementById(id); e.textContent=msg; e.style.display='block'; }
+
+async function login(){
+  const apiBase = (document.getElementById('apiBase').value.trim() || defaultApiBase()).replace(/\/$/,'');
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  document.getElementById('loginErr').style.display='none';
+  if(!apiBase || !email || !password){ showErr('loginErr','Please fill in all fields.'); return; }
+  try{
+    const res = await fetch(`${apiBase}/api/auth/login`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password})
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Login failed.');
+    if(data.user.role !== 'partner'){ throw new Error('This is not a partner account.'); }
+    session = { token: data.token, apiBase };
+    sessionStorage.setItem('ht_partner_session', JSON.stringify(session));
+    await afterLogin(data.user);
+  } catch(e){ showErr('loginErr', e.message); }
+}
+
+async function afterLogin(user){
+  const meRes = await fetch(`${session.apiBase}/api/auth/me`, { headers:{'x-session-token':session.token} });
+  const me = await meRes.json();
+  if(!meRes.ok) throw new Error(me.error || 'Your session has expired. Please log in again.');
+  document.getElementById('loginView').style.display='none';
+  if(me.partnerStatus !== 'approved'){
+    document.getElementById('pendingView').style.display='block';
+    return;
+  }
+  const wallet = await fetchWallet();
+  renderCommissionNotice(wallet && wallet.commissionTiers);
+  if(!wallet || wallet.balance < wallet.minRecharge){
+    document.getElementById('minRechargeLabel').textContent = wallet ? wallet.minRecharge : 500;
+    document.getElementById('rechargeBalance').textContent = `₹${wallet ? wallet.balance : 0}`;
+    document.getElementById('rechargeView').style.display='flex';
+    return;
+  }
+  document.getElementById('dashView').style.display='block';
+  document.getElementById('welcomeName').textContent = `Welcome, ${me.user.name}`;
+  renderWallet(wallet);
+  loadJobs();
+}
+
+/* Shows the company's commission slabs as a warning box on both recharge screens.
+   Falls back to the standard slabs if the server didn't send them, so the warning always appears. */
+const DEFAULT_COMMISSION_TIERS = [
+  '₹1 – ₹1,999 → 10% company commission',
+  '₹2,000 – ₹4,999 → 15% company commission',
+  'Above ₹5,000 → 20% company commission'
+];
+function renderCommissionNotice(tiers){
+  const list = (tiers && tiers.length) ? tiers : DEFAULT_COMMISSION_TIERS;
+  const html = `<div style="margin-bottom:4px;">Based on the customer's total bill:</div>` +
+    list.map((t,i)=>`<div><strong style="color:var(--ink);">${i+1}.</strong> ${t}</div>`).join('') +
+    `<div style="margin-top:6px;">This is deducted from your wallet automatically when a job is assigned to you.</div>`;
+  ['commissionNotice1','commissionNotice2'].forEach(id=>{ const el = document.getElementById(id); if(el) el.innerHTML = html; });
+}
+
+async function fetchWallet(){
+  try{
+    const res = await fetch(`${session.apiBase}/api/partner/wallet`, { headers:{'x-session-token':session.token} });
+    if(!res.ok) return null;
+    return await res.json();
+  } catch(e){ return null; }
+}
+function renderWallet(wallet){
+  document.getElementById('walletBalanceLabel').textContent = `₹${wallet.balance}`;
+  document.getElementById('txnHistory').innerHTML = wallet.transactions.length
+    ? wallet.transactions.map(t => `
+        <div style="display:flex; justify-content:space-between; font-size:12.5px; padding:6px 0; border-bottom:1px solid var(--line);">
+          <span style="color:var(--ink2);">${new Date(t.date).toLocaleDateString()} — ${t.reason}</span>
+          <span style="color:${t.type==='credit' ? 'var(--green)' : 'var(--red)'}; font-weight:600;">${t.type==='credit'?'+':'-'}₹${t.amount}</span>
+        </div>`).join('')
+    : '<p style="font-size:12.5px; color:var(--ink2);">No transactions yet.</p>';
+}
+function toggleTxnHistory(){
+  const el = document.getElementById('txnHistory');
+  el.style.display = el.style.display==='none' ? 'block' : 'none';
+}
+
+function loadRazorpayScript(){
+  return new Promise((resolve,reject)=>{
+    if(window.Razorpay){ resolve(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    s.onload = resolve; s.onerror = ()=>reject(new Error('Could not load payment gateway — check your internet connection.'));
+    document.body.appendChild(s);
+  });
+}
+async function startRecharge(fromDash){
+  const amountInput = document.getElementById(fromDash ? 'rechargeAmount2' : 'rechargeAmount');
+  const errEl = document.getElementById(fromDash ? 'rechargeErr2' : 'rechargeErr');
+  errEl.style.display='none';
+  const amount = Number(amountInput.value);
+  if(!amount || amount < 500){ errEl.textContent = 'Minimum recharge is ₹500.'; errEl.style.display='block'; return; }
+  try{
+    const orderRes = await fetch(`${session.apiBase}/api/partner/wallet/create-order`, {
+      method:'POST', headers:{'Content-Type':'application/json','x-session-token':session.token}, body: JSON.stringify({amount})
+    });
+    const order = await orderRes.json();
+    if(!orderRes.ok) throw new Error(order.error || 'Could not start recharge.');
+    await loadRazorpayScript();
+    const keyId = order.keyId || RAZORPAY_KEY_ID;
+    if(!keyId) throw new Error('Online wallet recharge is not configured. Contact the administrator.');
+    const rz = new Razorpay({
+      key: keyId, amount: order.amount, currency:'INR', name:'Home-Tech Services — Wallet Recharge', order_id: order.id,
+      theme:{ color:'#6d7cff' },
+      handler: async function(response){
+        try{
+          const verifyRes = await fetch(`${session.apiBase}/api/partner/wallet/verify-payment`, {
+            method:'POST', headers:{'Content-Type':'application/json','x-session-token':session.token},
+            body: JSON.stringify({ ...response, amount })
+          });
+          const verify = await verifyRes.json();
+          if(!verifyRes.ok) throw new Error(verify.error);
+          location.reload();
+        } catch(e){ errEl.textContent = 'Payment could not be verified: ' + e.message; errEl.style.display='block'; }
+      },
+      modal:{ ondismiss: function(){ errEl.textContent='Payment was cancelled.'; errEl.style.display='block'; } }
+    });
+    rz.open();
+  } catch(e){ errEl.textContent = e.message; errEl.style.display='block'; }
+}
+
+function logout(){
+  if(session) fetch(`${session.apiBase}/api/auth/logout`, { method:'POST', headers:{'x-session-token':session.token} }).catch(()=>{});
+  sessionStorage.removeItem('ht_partner_session');
+  Object.values(locationIntervals).forEach(clearInterval);
+  location.reload();
+}
+
+async function loadJobs(){
+  try{
+    const res = await fetch(`${session.apiBase}/api/partner/bookings`, { headers:{'x-session-token':session.token} });
+    const jobs = await res.json();
+    if(!res.ok) throw new Error(jobs.error || 'Could not load assigned jobs.');
+    renderJobs(jobs);
+  } catch(e){
+    document.getElementById('jobsList').innerHTML = `<p class="empty">Could not load jobs: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderJobs(jobs){
+  const list = document.getElementById('jobsList');
+  if(!jobs.length){ list.innerHTML = '<p class="empty">No jobs assigned yet.</p>'; return; }
+  list.innerHTML = jobs.map(b => `
+    <div class="job">
+      <div class="top">
+        <h3>${(b.items||[]).map(i=>`${escapeHtml(i.name)} — ${escapeHtml(i.opt || 'Service')}`).join(', ') || 'Service'}</h3>
+        <span class="id">${escapeHtml(b.id)}</span>
+      </div>
+      <div class="meta">
+        ${escapeHtml(b.name || '')} · ${escapeHtml(b.phone || '')}<br>
+        ${escapeHtml(b.address || '')}, ${escapeHtml(b.city || '')} ${escapeHtml(b.pin || '')}<br>
+        ${escapeHtml(b.date || '')} · ${escapeHtml(b.time || '')} · ₹${Number(b.total)||0}
+      </div>
+      <div class="row" style="margin-bottom:10px;">
+        <span class="status-badge">${escapeHtml(b.status || 'Confirmed')}</span>
+      </div>
+      <div class="row">
+        ${customerWhatsAppLink(b)}
+        <select onchange="updateStatus('${escapeHtml(b.id)}', this.value)">
+          ${STATUS_STAGES.map(s => `<option value="${escapeHtml(s)}" ${s===(b.status||'Confirmed')?'selected':''}>${escapeHtml(s)}</option>`).join('')}
+        </select>
+        <button class="btn-ghost" id="locBtn-${escapeHtml(b.id)}" onclick="toggleLocationSharing('${escapeHtml(b.id)}')">
+          ${locationIntervals[b.id] ? 'Stop Sharing Location' : 'Start Sharing Location'}
+        </button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function customerWhatsAppLink(booking){
+  const number = String(booking.phone || '').replace(/\D/g,'');
+  if(number.length < 10) return '';
+  const message = encodeURIComponent(`Hi ${booking.name || 'Customer'}, I am your Home-Tech service partner for booking ${booking.id}.`);
+  return `<a class="btn-ghost" href="https://wa.me/${number}?text=${message}" target="_blank" rel="noopener">WhatsApp Customer</a>`;
+}
+
+async function updateStatus(id, status){
+  try{
+    const res = await fetch(`${session.apiBase}/api/partner/bookings/${id}/status`, {
+      method:'PATCH', headers:{'Content-Type':'application/json','x-session-token':session.token},
+      body: JSON.stringify({status})
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error);
+  } catch(e){ alert('Could not update status: ' + e.message); }
+}
+
+function toggleLocationSharing(id){
+  const btn = document.getElementById(`locBtn-${id}`);
+  if(locationIntervals[id]){
+    clearInterval(locationIntervals[id]);
+    delete locationIntervals[id];
+    btn.textContent = 'Start Sharing Location';
+    return;
+  }
+  if(!navigator.geolocation){ alert('Location is not supported on this device.'); return; }
+  const send = ()=> navigator.geolocation.getCurrentPosition(
+    async (pos)=>{
+      try{
+        await fetch(`${session.apiBase}/api/partner/bookings/${id}/location`, {
+          method:'PATCH', headers:{'Content-Type':'application/json','x-session-token':session.token},
+          body: JSON.stringify({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+        });
+      } catch(e){ /* silent retry next interval */ }
+    },
+    (err)=> console.warn('location error', err.message),
+    { enableHighAccuracy:true, timeout:10000 }
+  );
+  send();
+  locationIntervals[id] = setInterval(send, 10000);
+  btn.textContent = 'Stop Sharing Location';
+}
+
+// restore session within this tab
+window.addEventListener('DOMContentLoaded', async ()=>{
+  const saved = sessionStorage.getItem('ht_partner_session');
+  if(saved){
+    session = JSON.parse(saved);
+    document.getElementById('apiBase').value = session.apiBase;
+    try{
+      const meRes = await fetch(`${session.apiBase}/api/auth/me`, { headers:{'x-session-token':session.token} });
+      if(meRes.ok){ const me = await meRes.json(); document.getElementById('loginView').style.display='none'; await afterLogin(me.user); }
+    } catch(e){ /* fall back to login form */ }
+  }
+});
+
+setTimeout(()=>{ const l=document.getElementById('appLoader'); if(l) l.classList.add('loaded'); }, 700);
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+.env
+backend/.env
+node_modules
+uploads
+*.log
+
+# Legacy/local data files
+backend/accounts.json
+backend/admin-sessions.json
+backend/admins.json
+backend/bookings.json
+backend/otp-limits.json
+backend/partners.json
+backend/sessions.json

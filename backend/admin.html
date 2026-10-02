@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="api-base" content="">
+<title>Hometake Admin</title>
+<style>
+  :root{ --bg:#05060b; --card:#0f1424; --line:rgba(255,255,255,0.1); --ink:#f4f6fb; --ink2:#9aa4b2; --indigo:#6d7cff; --green:#4ade80; --red:#ef4444; --amber:#f0b25c; }
+  *{box-sizing:border-box;}
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,system-ui,sans-serif; padding:24px; }
+  .center{ display:flex; align-items:center; justify-content:center; min-height:80vh; }
+  .wrap{ max-width:960px; margin:0 auto; }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:20px; padding:28px; max-width:380px; width:100%; }
+  h1{ font-size:22px; margin:0 0 4px; }
+  h2{ font-size:15px; margin:0 0 6px; }
+  p.sub{ color:var(--ink2); font-size:13px; margin:0 0 20px; }
+  label{ font-size:12px; color:var(--ink2); display:block; margin-bottom:6px; }
+  input,select{ width:100%; background:rgba(255,255,255,0.04); border:1px solid var(--line); color:var(--ink); border-radius:10px; padding:12px 14px; font-size:14px; margin-bottom:14px; }
+  input:focus,select:focus{ outline:none; border-color:var(--indigo); }
+  button{ padding:12px 18px; border-radius:999px; border:none; font-size:13.5px; font-weight:600; cursor:pointer; }
+  .btn-primary{ background:var(--indigo); color:#fff; width:100%; padding:14px; }
+  .btn-ghost{ background:rgba(255,255,255,0.05); color:var(--ink); border:1px solid var(--line); }
+  .err{ color:var(--red); font-size:12.5px; margin-bottom:10px; display:none; }
+  .ok{ color:var(--green); font-size:12.5px; margin-bottom:10px; display:none; }
+  .topbar{ display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:10px; }
+  .tabs{ display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; position:relative; }
+  .tab{ position:relative; z-index:1; padding:9px 18px; border-radius:999px; border:1px solid var(--line); background:transparent; color:var(--ink2); font-size:13px; cursor:pointer; transition:color .25s ease; }
+  .tab.active{ background:transparent; color:#fff; border-color:transparent; }
+  #tabPill{ position:absolute; top:0; left:0; z-index:0; border-radius:999px; background:var(--indigo); pointer-events:none; width:0; height:0; transition: transform .45s cubic-bezier(.34,1.2,.64,1), width .45s cubic-bezier(.34,1.2,.64,1), height .45s ease; box-shadow:0 8px 22px -8px rgba(109,124,255,0.6); }
+  .pane{ display:none; } .pane.active{ display:block; }
+  .row-item{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px 18px; margin-bottom:12px; }
+  .top{ display:flex; justify-content:space-between; align-items:start; margin-bottom:8px; flex-wrap:wrap; gap:8px; }
+  h3{ margin:0; font-size:15px; }
+  .id{ font-size:11px; color:var(--ink2); }
+  .meta{ font-size:12.5px; color:var(--ink2); margin-bottom:12px; }
+  .empty{ color:var(--ink2); font-size:13px; text-align:center; padding:40px 0; }
+  .badge{ font-size:11px; padding:4px 10px; border-radius:999px; }
+  .badge.pending{ background:rgba(240,178,92,0.15); color:var(--amber); }
+  .badge.approved{ background:rgba(74,222,128,0.15); color:var(--green); }
+  .badge.rejected{ background:rgba(239,68,68,0.15); color:var(--red); }
+  .row{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  button.action{ padding:7px 14px; border-radius:8px; border:none; font-size:12.5px; font-weight:600; cursor:pointer; }
+  .btn-approve{ background:rgba(74,222,128,0.15); color:var(--green); }
+  .btn-reject{ background:rgba(239,68,68,0.15); color:var(--red); }
+  .price-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:10px; }
+  .price-row input{ width:110px; margin:0; padding:8px 10px; }
+  .thumb{ width:100%; height:110px; object-fit:cover; border-radius:10px; background:rgba(255,255,255,0.03); }
+  .gallery-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:14px; }
+  .gallery-item{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:10px; }
+  .settings-card{ max-width:420px; }
+
+  /* 3D loading splash */
+  #appLoader{ position:fixed; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; background:var(--bg); transition:opacity .5s ease, visibility .5s ease; }
+  #appLoader.loaded{ opacity:0; visibility:hidden; pointer-events:none; }
+  .loader-scene{ width:60px; height:60px; perspective:400px; }
+  .loader-cube{ width:100%; height:100%; position:relative; transform-style:preserve-3d; animation:cubeSpin 2.6s infinite linear; }
+  .loader-cube .face{ position:absolute; width:60px; height:60px; background:linear-gradient(135deg, rgba(109,124,255,0.35), rgba(63,198,255,0.15)); border:1px solid rgba(109,124,255,0.5); border-radius:8px; }
+  .loader-cube .front{ transform: translateZ(30px); } .loader-cube .back{ transform: rotateY(180deg) translateZ(30px); }
+  .loader-cube .right{ transform: rotateY(90deg) translateZ(30px); } .loader-cube .left{ transform: rotateY(-90deg) translateZ(30px); }
+  .loader-cube .top{ transform: rotateX(90deg) translateZ(30px); } .loader-cube .bottom{ transform: rotateX(-90deg) translateZ(30px); }
+  @keyframes cubeSpin{ from{ transform: rotateX(0) rotateY(0); } to{ transform: rotateX(360deg) rotateY(360deg); } }
+  .loader-label{ margin-top:22px; font-size:12px; letter-spacing:.2em; text-transform:uppercase; color:var(--ink2); }
+</style>
+</head>
+<body>
+<div id="appLoader"><div class="loader-scene"><div class="loader-cube"><div class="face front"></div><div class="face back"></div><div class="face right"></div><div class="face left"></div><div class="face top"></div><div class="face bottom"></div></div></div><p class="loader-label">Home-Tech Admin</p></div>
+
+
+<div id="loginView" class="center">
+  <div class="card">
+    <h1>Hometake Admin</h1>
+    <p class="sub">Log in to manage bookings, partners, prices and gallery.</p>
+    <label>API Server URL</label>
+    <input id="apiBase" value="" placeholder="Uses this site's API by default">
+    <label>Username</label>
+    <input id="loginUser" placeholder="admin">
+    <label>Password</label>
+    <input id="loginPass" type="password" placeholder="Password">
+    <p id="loginErr" class="err"></p>
+    <button class="btn-primary" onclick="login()">Log In</button>
+  </div>
+</div>
+
+<div id="dashView" class="wrap" style="display:none;">
+  <div class="topbar">
+    <h1 style="margin:0;">Hometake Admin</h1>
+    <button class="btn-ghost" onclick="logout()">Logout</button>
+  </div>
+
+  <div class="tabs">
+    <span id="tabPill"></span>
+    <button class="tab active" onclick="switchTab('bookings')">Bookings</button>
+    <button class="tab" onclick="switchTab('customers')">Customers</button>
+    <button class="tab" onclick="switchTab('partners')">Partners</button>
+    <button class="tab" onclick="switchTab('prices')">Prices & Photos</button>
+    <button class="tab" onclick="switchTab('gallery')">Gallery</button>
+    <button class="tab" onclick="switchTab('branding')">Branding</button>
+    <button class="tab" onclick="switchTab('account')">Account</button>
+  </div>
+
+  <p id="err" class="err"></p>
+
+  <div id="pane-bookings" class="pane active"><div id="list"></div></div>
+  <div id="pane-customers" class="pane"><div id="customerList"></div></div>
+  <div id="pane-partners" class="pane"><div id="partnerList"></div></div>
+
+  <div id="pane-prices" class="pane">
+    <p class="sub">Change what customers pay for each service, and replace the built-in icon with your own photo. Updates apply immediately on the website.</p>
+
+    <div class="row-item">
+      <h3 style="margin-bottom:12px;">Add New Product</h3>
+      <label>Name</label>
+      <input id="newProdName" placeholder="e.g. Solar Water Heater">
+      <label>Description</label>
+      <input id="newProdDesc" placeholder="Short description customers will see">
+      <label>Category</label>
+      <input id="newProdCat" placeholder="e.g. Home Appliances, Cooling, Electrical...">
+      <label>Price (₹)</label>
+      <input id="newProdPrice" type="number" min="1" placeholder="e.g. 399">
+      <label>Photo (optional)</label>
+      <input id="newProdImage" type="file" accept="image/*">
+      <p id="newProdErr" class="err"></p>
+      <p id="newProdOk" class="ok"></p>
+      <button class="btn-primary" onclick="addNewProduct()">Add Product</button>
+    </div>
+
+    <div id="priceList"></div>
+  </div>
+
+  <div id="pane-gallery" class="pane">
+    <div class="row-item">
+      <h3 style="margin-bottom:12px;">Upload new photo/video</h3>
+      <label>Title</label>
+      <input id="galTitle" placeholder="e.g. Split AC deep cleaning">
+      <label>Category</label>
+      <input id="galCategory" placeholder="e.g. Cooling">
+      <label>Type</label>
+      <select id="galType"><option value="image">Photo</option><option value="video">Video</option></select>
+      <label>File</label>
+      <input id="galFile" type="file" accept="image/*,video/*">
+      <p id="galErr" class="err"></p>
+      <p id="galOk" class="ok"></p>
+      <button class="btn-primary" onclick="uploadGalleryItem()">Upload</button>
+    </div>
+    <div id="galleryGrid" class="gallery-grid"></div>
+  </div>
+
+  <div id="pane-branding" class="pane">
+    <div class="row-item settings-card">
+      <h3 style="margin-bottom:12px;">App Name & Logo</h3>
+      <p class="sub" style="margin-bottom:16px;">Changes the name shown in the header/footer and the logo badge across the website.</p>
+      <label>App Name</label>
+      <input id="brandName" placeholder="e.g. Hometake Services">
+      <label>Logo Image (square works best)</label>
+      <input id="brandLogo" type="file" accept="image/*">
+      <p id="brandErr" class="err"></p>
+      <p id="brandOk" class="ok"></p>
+      <button class="btn-primary" onclick="saveBranding()">Save Branding</button>
+    </div>
+  </div>
+
+  <div id="pane-account" class="pane">
+    <div class="row-item settings-card">
+      <h3 style="margin-bottom:12px;">Change Username / Password</h3>
+      <label>Current Password</label>
+      <input id="curPass" type="password" placeholder="Required to confirm it's you">
+      <label>New Username (optional)</label>
+      <input id="newUser" placeholder="Leave blank to keep current">
+      <label>New Password (optional, min 6 characters)</label>
+      <input id="newPass" type="password" placeholder="Leave blank to keep current">
+      <p id="credErr" class="err"></p>
+      <p id="credOk" class="ok"></p>
+      <button class="btn-primary" onclick="changeCredentials()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const STATUS_STAGES = ['Requested','Confirmed','Technician Assigned','On the Way','In Progress','Completed'];
+let session = null; // { token, apiBase, username }
+let approvedPartners = [];
+const API_BASE_META = document.querySelector('meta[name="api-base"]');
+function defaultApiBase(){
+  const configured = window.HOMETakeApiBase || (API_BASE_META && API_BASE_META.content.trim());
+  const localHost = ['localhost','127.0.0.1'].includes(location.hostname);
+  const localStaticPage = location.protocol==='file:' || (localHost && ['','5500','5501','5502'].includes(location.port));
+  return (configured || (localStaticPage ? 'http://localhost:4000' : location.origin)).replace(/\/$/,'');
+}
+function escapeHtml(value){
+  return String(value ?? '').replace(/[&<>"']/g, char=>({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
+}
+function customerWhatsAppLink(booking){
+  const number = String(booking.phone || '').replace(/\D/g,'');
+  if(number.length < 10) return '';
+  const message = encodeURIComponent(`Hi ${booking.name || 'Customer'}, I am contacting you about Home-Tech booking ${booking.id}.`);
+  return `<a href="https://wa.me/${number}?text=${message}" target="_blank" rel="noopener">WhatsApp customer</a>`;
+}
+
+function updateTabPill(){
+  const a = document.querySelector('.tab.active'); const p = document.getElementById('tabPill');
+  if(!a || !p || !a.offsetWidth) return;
+  p.style.width = a.offsetWidth + 'px'; p.style.height = a.offsetHeight + 'px';
+  p.style.transform = `translate(${a.offsetLeft}px, ${a.offsetTop}px)`;
+}
+window.addEventListener('resize', updateTabPill);
+function switchTab(tab){
+  document.querySelectorAll('.tab').forEach((t,i)=> t.classList.toggle('active', ['bookings','customers','partners','prices','gallery','branding','account'][i]===tab));
+  document.querySelectorAll('.pane').forEach(p=>p.classList.remove('active'));
+  document.getElementById('pane-'+tab).classList.add('active');
+  if(tab==='prices') loadPrices();
+  if(tab==='customers') loadCustomers();
+  if(tab==='gallery') loadGallery();
+  if(tab==='branding') loadBranding();
+  updateTabPill();
+}
+
+async function login(){
+  const apiBase = (document.getElementById('apiBase').value.trim() || defaultApiBase()).replace(/\/$/,'');
+  const username = document.getElementById('loginUser').value.trim();
+  const password = document.getElementById('loginPass').value;
+  const err = document.getElementById('loginErr'); err.style.display='none';
+  if(!apiBase || !username || !password){ err.textContent='Please fill in all fields.'; err.style.display='block'; return; }
+  try{
+    const res = await fetch(`${apiBase}/api/admin/login`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, password})
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Login failed.');
+    session = { token: data.token, apiBase, username: data.username };
+    sessionStorage.setItem('ht_admin_session', JSON.stringify(session));
+    document.getElementById('loginView').style.display='none';
+    document.getElementById('dashView').style.display='block';
+    loadAll();
+  } catch(e){ err.textContent = e.message; err.style.display='block'; }
+}
+function logout(){
+  if(session) fetch(`${session.apiBase}/api/admin/logout`, { method:'POST', headers:authHeaders() }).catch(()=>{});
+  sessionStorage.removeItem('ht_admin_session'); location.reload();
+}
+function authHeaders(json){ const h = {'x-admin-token': session.token}; if(json) h['Content-Type']='application/json'; return h; }
+
+async function loadAll(){
+  setTimeout(updateTabPill, 50);
+  const errEl = document.getElementById('err'); errEl.style.display='none';
+  try{
+    const [bookingsRes, partnersRes] = await Promise.all([
+      fetch(`${session.apiBase}/api/bookings`, { headers: authHeaders() }),
+      fetch(`${session.apiBase}/api/partners`, { headers: authHeaders() })
+    ]);
+    const bookings = await bookingsRes.json();
+    const partners = await partnersRes.json();
+    if(!bookingsRes.ok) throw new Error(bookings.error || 'Could not load bookings.');
+    if(!partnersRes.ok) throw new Error(partners.error || 'Could not load partners.');
+    approvedPartners = partners.filter(p => p.status === 'approved');
+    renderBookings(bookings);
+    renderPartners(partners);
+  } catch(e){ errEl.textContent = e.message; errEl.style.display = 'block'; }
+}
+
+function renderBookings(bookings){
+  const list = document.getElementById('list');
+  if(!bookings.length){ list.innerHTML = '<p class="empty">No bookings yet.</p>'; return; }
+  list.innerHTML = bookings.map(b => `
+    <div class="row-item">
+      <div class="top">
+        <h3>${(b.items||[]).map(i=>escapeHtml(i.name)).join(', ') || 'Booking'}</h3>
+        <span class="id">${escapeHtml(b.id)}</span>
+      </div>
+      <div class="meta">${escapeHtml(b.name || '')} · ${escapeHtml(b.phone || '')} · ${escapeHtml(b.email || '')} · ${escapeHtml(b.address || '')}, ${escapeHtml(b.city || '')} ${escapeHtml(b.pin || '')}<br>
+        ${escapeHtml(b.date || '')} · ${escapeHtml(b.time || '')} · ₹${Number(b.total)||0} · ${b.paymentStatus === 'paid' ? 'Paid Online' : 'Pay After Service'}
+        ${b.assignedPartner ? `<br>Assigned to: ${escapeHtml(b.assignedPartner)}` : '<br><em>Not yet assigned</em>'}<br>${customerWhatsAppLink(b)}</div>
+      <div class="row">
+        <select onchange="updateStatus('${escapeHtml(b.id)}', this.value)">
+          ${STATUS_STAGES.map(s => `<option value="${escapeHtml(s)}" ${s === (b.status || 'Requested') ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+        </select>
+        <select id="assign-${escapeHtml(b.id)}">
+          <option value="">Assign partner…</option>
+          ${approvedPartners.map(p => `<option value="${escapeHtml(p.email)}" ${b.assignedPartner===p.email?'selected':''}>${escapeHtml(p.name)} (${escapeHtml(p.email)})</option>`).join('')}
+        </select>
+        <button class="action btn-approve" onclick="assignPartner('${escapeHtml(b.id)}')" ${b.assignedPartner?'disabled':''}>${b.assignedPartner?'Assigned':'Assign'}</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderPartners(partners){
+  const list = document.getElementById('partnerList');
+  if(!partners.length){ list.innerHTML = '<p class="empty">No partner applications yet.</p>'; return; }
+  list.innerHTML = partners.map(p => `
+    <div class="row-item">
+      <div class="top">
+        <div class="row" style="gap:10px;">
+          ${p.photo ? `<img src="${escapeHtml(session.apiBase+p.photo)}" style="width:44px;height:44px;object-fit:cover;border-radius:10px;">` : ''}
+          <div><h3>${escapeHtml(p.name || p.email)}</h3><span style="font-size:11px; color:var(--ink2);">Aadhar: ${escapeHtml(p.aadharNumber || 'Not provided')}</span></div>
+        </div>
+        <span class="badge ${escapeHtml(p.status)}">${escapeHtml(p.status)}</span>
+      </div>
+      <div class="meta">${escapeHtml(p.email)} · ${escapeHtml(p.phone || '')} · ${escapeHtml(p.city || '')} ${escapeHtml(p.area || '')} · ${escapeHtml(p.expertise || '')} · ${escapeHtml(p.years || 0)} yrs exp</div>
+      <div class="meta">Wallet balance: <strong style="color:var(--ink);">₹${Number(p.walletBalance)||0}</strong> · ${Number(p.transactionCount)||0} transaction(s)</div>
+      <div class="row">
+        <button class="action btn-approve" onclick="setPartnerStatus('${escapeHtml(p.email)}','approved')">Approve</button>
+        <button class="action btn-reject" onclick="setPartnerStatus('${escapeHtml(p.email)}','rejected')">Reject</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function loadCustomers(){
+  const list = document.getElementById('customerList');
+  list.innerHTML = '<p class="empty">Loading customers…</p>';
+  try{
+    const response = await fetch(`${session.apiBase}/api/admin/customers`, { headers:authHeaders() });
+    const customers = await response.json();
+    if(!response.ok) throw new Error(customers.error || 'Could not load customers.');
+    if(!customers.length){ list.innerHTML = '<p class="empty">No customers yet.</p>'; return; }
+    list.innerHTML = customers.map(customer=>`
+      <div class="row-item">
+        <div class="top"><h3>${escapeHtml(customer.name)}</h3><span class="id">Account #${escapeHtml(customer.id)}</span></div>
+        <div class="meta">${escapeHtml(customer.email)} · ${escapeHtml(customer.phone || 'No phone on file')}</div>
+        <div class="meta">${Number(customer.bookingCount)||0} booking(s) · Joined ${escapeHtml(new Date(customer.created_at).toLocaleDateString())}</div>
+        <details><summary>Booking history</summary>${(customer.bookings||[]).map(booking=>`<div class="meta">${escapeHtml(booking.id)} · ${(booking.items||[]).map(item=>escapeHtml(item.name)).join(', ')} · ${escapeHtml(booking.status)} · ₹${Number(booking.total)||0}</div>`).join('') || '<p class="meta">No bookings yet.</p>'}</details>
+      </div>`).join('');
+  } catch(error){ list.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; }
+}
+
+async function updateStatus(id, status){
+  try{
+    const res = await fetch(`${session.apiBase}/api/bookings/${id}/status`, { method:'PATCH', headers:authHeaders(true), body: JSON.stringify({status}) });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error);
+  } catch(e){ alert('Error: ' + e.message); }
+}
+async function assignPartner(id){
+  const partnerEmail = document.getElementById(`assign-${id}`).value;
+  if(!partnerEmail){ alert('Choose a partner first.'); return; }
+  try{
+    const res = await fetch(`${session.apiBase}/api/bookings/${id}/assign`, { method:'PATCH', headers:authHeaders(true), body: JSON.stringify({ partnerEmail }) });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error);
+    loadAll();
+  } catch(e){ alert('Error: ' + e.message); }
+}
+async function setPartnerStatus(email, status){
+  try{
+    const res = await fetch(`${session.apiBase}/api/partners/${encodeURIComponent(email)}/status`, { method:'PATCH', headers:authHeaders(true), body: JSON.stringify({status}) });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error);
+    loadAll();
+  } catch(e){ alert('Error: ' + e.message); }
+}
+
+/* ---- Prices & Photos ---- */
+async function loadPrices(){
+  const list = document.getElementById('priceList');
+  list.innerHTML = '<p class="empty">Loading…</p>';
+  try{
+    const res = await fetch(`${session.apiBase}/api/services`);
+    const services = await res.json();
+    if(!res.ok) throw new Error(services.error || 'Could not load services.');
+    list.innerHTML = services.map(s => `
+      <div class="price-row" style="flex-wrap:wrap;">
+        <div class="row" style="flex:1; min-width:200px;">
+          ${s.image ? `<img src="${escapeHtml(session.apiBase+s.image)}" style="width:40px;height:36px;object-fit:cover;border-radius:8px;">` : ''}
+          <span>${escapeHtml(s.name)}${s.custom ? ' <span style="font-size:10px; color:var(--indigo);">(custom)</span>' : ''}</span>
+        </div>
+        <div class="row">
+          <span>₹</span>
+          <input id="price-${s.id}" type="number" min="1" value="${s.price}">
+          <button class="action btn-approve" onclick="savePrice('${s.id}')">Save Price</button>
+        </div>
+        <div class="row">
+          <input id="img-${s.id}" type="file" accept="image/*" style="width:auto; margin:0; padding:6px;">
+          <button class="action btn-approve" onclick="uploadServiceImage('${s.id}')">Upload Photo</button>
+          ${s.image ? `<button class="action btn-reject" onclick="removeServiceImage('${s.id}')">Remove Photo</button>` : ''}
+          ${s.custom ? `<button class="action btn-reject" onclick="deleteProduct('${s.id}')">Delete Product</button>` : ''}
+        </div>
+      </div>
+    `).join('');
+  } catch(e){ list.innerHTML = `<p class="empty">${escapeHtml(e.message)}</p>`; }
+}
+async function uploadServiceImage(id){
+  const fileInput = document.getElementById(`img-${id}`);
+  if(!fileInput.files[0]){ alert('Choose a photo first.'); return; }
+  const form = new FormData();
+  form.append('image', fileInput.files[0]);
+  try{
+    const res = await fetch(`${session.apiBase}/api/admin/services/${id}/image`, { method:'POST', headers:{'x-admin-token':session.token}, body: form });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error);
+    loadPrices();
+  } catch(e){ alert('Error: ' + e.message); }
+}
+async function removeServiceImage(id){
+  if(!confirm('Remove this photo and go back to the default icon?')) return;
+  try{
+    const res = await fetch(`${session.apiBase}/api/admin/services/${id}/image`, { method:'DELETE', headers:authHeaders() });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error);
+    loadPrices();
+  } catch(e){ alert('Error: ' + e.message); }
+}
+async function savePrice(id){
+  const price = Number(document.getElementById(`price-${id}`).value);
+  if(!price || price<=0){ alert('Enter a valid price.'); return; }
+  try{
+    const res = await fetch(`${session.apiBase}/api/admin/services/${id}/price`, { method:'PATCH', headers:authHeaders(true), body: JSON.stringify({price}) });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error);
+  } catch(e){ alert('Error: ' + e.message); }
+}
+
+/* ---- Gallery ---- */
+async function loadGallery(){
+  const grid = document.getElementById('galleryGrid');
+  grid.innerHTML = '<p class="empty">Loading…</p>';
+  try{
+    const res = await fetch(`${session.apiBase}/api/gallery`);
+    const items = await res.json();
+    if(!res.ok) throw new Error(items.error || 'Could not load gallery.');
+    if(!items.length){ grid.innerHTML = '<p class="empty">No uploads yet.</p>'; return; }
+    grid.innerHTML = items.map(g => `
+      <div class="gallery-item">
+        ${g.type==='video'
+          ? `<video src="${escapeHtml(session.apiBase+g.src)}" class="thumb" controls></video>`
+          : `<img src="${escapeHtml(session.apiBase+g.src)}" class="thumb" alt="${escapeHtml(g.title)}">`}
+        <p style="font-size:12.5px; margin:8px 0 2px;">${escapeHtml(g.title)}</p>
+        <p style="font-size:11px; color:var(--ink2); margin:0 0 8px;">${escapeHtml(g.category||'')}</p>
+        <button class="action btn-reject" onclick="deleteGalleryItem('${escapeHtml(g.id)}')">Delete</button>
+      </div>
+    `).join('');
+  } catch(e){ grid.innerHTML = `<p class="empty">${escapeHtml(e.message)}</p>`; }
+}
+async function uploadGalleryItem(){
+  const title = document.getElementById('galTitle').value.trim();
+  const category = document.getElementById('galCategory').value.trim();
+  const type = document.getElementById('galType').value;
+  const fileInput = document.getElementById('galFile');
+  const errEl = document.getElementById('galErr'); const okEl = document.getElementById('galOk');
+  errEl.style.display='none'; okEl.style.display='none';
+  if(!fileInput.files[0]){ errEl.textContent = 'Please choose a file.'; errEl.style.display='block'; return; }
+  const form = new FormData();
+  form.append('file', fileInput.files[0]);
+  form.append('title', title);
+  form.append('category', category);
+  form.append('type', type);
+  try{
+    const res = await fetch(`${session.apiBase}/api/admin/gallery`, { method:'POST', headers:{'x-admin-token':session.token}, body: form });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Upload failed.');
+    okEl.textContent = 'Uploaded!'; okEl.style.display='block';
+    document.getElementById('galTitle').value=''; document.getElementById('galCategory').value=''; fileInput.value='';
+    loadGallery();
+  } catch(e){ errEl.textContent = e.message; errEl.style.display='block'; }
+}
+async function deleteGalleryItem(id){
+  if(!confirm('Delete this item?')) return;
+  try{
+    const res = await fetch(`${session.apiBase}/api/admin/gallery/${id}`, { method:'DELETE', headers:authHeaders() });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error);
+    loadGallery();
+  } catch(e){ alert('Error: ' + e.message); }
+}
+
+/* ---- Account (change username/password) ---- */
+/* ---- Add New Product ---- */
+async function addNewProduct(){
+  const name = document.getElementById('newProdName').value.trim();
+  const description = document.getElementById('newProdDesc').value.trim();
+  const category = document.getElementById('newProdCat').value.trim();
+  const price = Number(document.getElementById('newProdPrice').value);
+  const fileInput = document.getElementById('newProdImage');
+  const errEl = document.getElementById('newProdErr'); const okEl = document.getElementById('newProdOk');
+  errEl.style.display='none'; okEl.style.display='none';
+  if(!name || !price || price<=0){ errEl.textContent = 'Please enter a name and a valid price.'; errEl.style.display='block'; return; }
+  const form = new FormData();
+  form.append('name', name); form.append('description', description); form.append('category', category); form.append('price', price);
+  if(fileInput.files[0]) form.append('image', fileInput.files[0]);
+  try{
+    const res = await fetch(`${session.apiBase}/api/admin/services`, { method:'POST', headers:{'x-admin-token':session.token}, body: form });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error);
+    okEl.textContent = 'Product added! It now appears on the website.'; okEl.style.display='block';
+    document.getElementById('newProdName').value=''; document.getElementById('newProdDesc').value='';
+    document.getElementById('newProdCat').value=''; document.getElementById('newProdPrice').value=''; fileInput.value='';
+    loadPrices();
+  } catch(e){ errEl.textContent = e.message; errEl.style.display='block'; }
+}
+async function deleteProduct(id){
+  if(!confirm('Delete this product? This cannot be undone.')) return;
+  try{
+    const res = await fetch(`${session.apiBase}/api/admin/services/${id}`, { method:'DELETE', headers:authHeaders() });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error);
+    loadPrices();
+  } catch(e){ alert('Error: ' + e.message); }
+}
+
+/* ---- Branding (app name + logo) ---- */
+async function loadBranding(){
+  const errEl = document.getElementById('brandErr'); const okEl = document.getElementById('brandOk');
+  errEl.style.display='none'; okEl.style.display='none';
+  try{
+    const res = await fetch(`${session.apiBase}/api/settings`);
+    const settings = await res.json();
+    if(!res.ok) throw new Error(settings.error || 'Could not load settings.');
+    document.getElementById('brandName').value = settings.siteName || '';
+  } catch(e){ errEl.textContent = e.message; errEl.style.display='block'; }
+}
+async function saveBranding(){
+  const siteName = document.getElementById('brandName').value.trim();
+  const logoInput = document.getElementById('brandLogo');
+  const errEl = document.getElementById('brandErr'); const okEl = document.getElementById('brandOk');
+  errEl.style.display='none'; okEl.style.display='none';
+  const form = new FormData();
+  if(siteName) form.append('siteName', siteName);
+  if(logoInput.files[0]) form.append('logo', logoInput.files[0]);
+  try{
+    const res = await fetch(`${session.apiBase}/api/admin/settings`, { method:'POST', headers:{'x-admin-token':session.token}, body: form });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Could not save branding.');
+    okEl.textContent = 'Saved! Changes will appear on the website within moments.'; okEl.style.display='block';
+    logoInput.value = '';
+  } catch(e){ errEl.textContent = e.message; errEl.style.display='block'; }
+}
+
+async function changeCredentials(){
+  const currentPassword = document.getElementById('curPass').value;
+  const newUsername = document.getElementById('newUser').value.trim();
+  const newPassword = document.getElementById('newPass').value;
+  const errEl = document.getElementById('credErr'); const okEl = document.getElementById('credOk');
+  errEl.style.display='none'; okEl.style.display='none';
+  if(!currentPassword){ errEl.textContent = 'Enter your current password to confirm.'; errEl.style.display='block'; return; }
+  try{
+    const res = await fetch(`${session.apiBase}/api/admin/change-credentials`, {
+      method:'POST', headers:authHeaders(true),
+      body: JSON.stringify({ currentPassword, newUsername: newUsername||undefined, newPassword: newPassword||undefined })
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error);
+    okEl.textContent = 'Updated! Use your new details next time you log in.'; okEl.style.display='block';
+    document.getElementById('curPass').value=''; document.getElementById('newUser').value=''; document.getElementById('newPass').value='';
+  } catch(e){ errEl.textContent = e.message; errEl.style.display='block'; }
+}
+
+// restore session within this tab
+window.addEventListener('DOMContentLoaded', ()=>{
+  const saved = sessionStorage.getItem('ht_admin_session');
+  if(saved){
+    session = JSON.parse(saved);
+    document.getElementById('loginView').style.display='none';
+    document.getElementById('dashView').style.display='block';
+    loadAll();
+  }
+});
+
+setTimeout(()=>{ const l=document.getElementById('appLoader'); if(l) l.classList.add('loaded'); }, 700);
+</script>
+</body>
+</html>

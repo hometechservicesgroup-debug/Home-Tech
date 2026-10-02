@@ -1,0 +1,1746 @@
+require('dotenv').config();
+
+const express = require('express');
+const cors = require('cors');
+const twilio = require('twilio');
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
+const { Pool } = require('pg');
+const SERVICE_OPTIONS = require('./data/service-options');
+const { isRazorpayConfigured } = require('./payment-config');
+
+const {
+  DATABASE_URL,
+  TWILIO_ACCOUNT_SID,
+  TWILIO_AUTH_TOKEN,
+  TWILIO_VERIFY_SERVICE_SID,
+  RAZORPAY_KEY_ID,
+  RAZORPAY_KEY_SECRET,
+  ADMIN_USERNAME,
+  ADMIN_PASSWORD,
+  ALLOWED_ORIGIN,
+  UPLOADS_DIR,
+  PORT,
+  NODE_ENV
+} = process.env;
+
+if (!DATABASE_URL) {
+  console.error('Missing DATABASE_URL in environment. Set it before starting the backend.');
+  process.exit(1);
+}
+
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_VERIFY_SERVICE_SID) {
+  console.error('Missing Twilio env vars. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_VERIFY_SERVICE_SID.');
+  process.exit(1);
+}
+
+const paymentsEnabled = isRazorpayConfigured(process.env);
+if (!paymentsEnabled) {
+  console.warn('Razorpay env vars not set — online payment endpoints will return clear errors until configured.');
+}
+
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  max: 20
+});
+
+pool.on('error', (err) => {
+  console.error('Unexpected database pool error:', err.message);
+});
+
+const app = express();
+const allowedOrigins = (ALLOWED_ORIGIN || '').split(',').map((s) => s.trim()).filter(Boolean);
+if (NODE_ENV === 'production' && allowedOrigins.length === 0) {
+  throw new Error('ALLOWED_ORIGIN must contain the production website origin in production.');
+}
+if (NODE_ENV === 'production' && allowedOrigins.includes('*')) {
+  throw new Error('ALLOWED_ORIGIN cannot use * in production. Set the exact website origin.');
+}
+const allowAnyOrigin = NODE_ENV !== 'production' && allowedOrigins.includes('*');
+
+app.use(express.json({ limit: '10mb' }));
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowAnyOrigin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`Origin ${origin} is not allowed by CORS`));
+  },
+  credentials: true
+}));
+
+const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+let razorpay = null;
+if (paymentsEnabled) {
+  razorpay = new (require('razorpay'))({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
+}
+
+const uploadDir = path.resolve(UPLOADS_DIR || path.join(__dirname, 'uploads'));
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+app.use('/uploads', express.static(uploadDir));
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, uploadDir),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || '').toLowerCase();
+      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
+    }
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 }
+});
+
+async function query(sql, params = []) {
+  return pool.query(sql, params);
+}
+
+function safeNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function makeToken() {
+  return crypto.randomBytes(24).toString('hex');
+}
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    phone: user.phone || '',
+    role: user.role
+  };
+}
+
+function stripMdash(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+async function getUserFromSessionToken(token, sessionTable = 'sessions') {
+  const table = sessionTable === 'admin_sessions' ? 'admin_sessions' : 'sessions';
+  const result = await query(`
+    SELECT u.*
+    FROM ${table} s
+    JOIN users u ON u.id = s.user_id
+    WHERE s.token = $1 AND s.expires_at > NOW()
+  `, [token]);
+  return result.rows[0] || null;
+}
+
+async function createSessionToken(userId, sessionTable = 'sessions') {
+  const token = makeToken();
+  await query(`INSERT INTO ${sessionTable} (token, user_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')`, [token, userId]);
+  return token;
+}
+
+async function getPartnerProfile(userId) {
+  const result = await query('SELECT * FROM partners WHERE user_id = $1', [userId]);
+  return result.rows[0] || null;
+}
+
+async function getFullBooking(bookingId) {
+  const bookingResult = await query(`
+            SELECT b.*, c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone,
+          p.name AS partner_name, p.email AS partner_email, p.phone AS partner_phone,
+              p2.status AS partner_status,
+              EXISTS (SELECT 1 FROM reviews r WHERE r.booking_id = b.id AND r.user_id = b.customer_id) AS reviewed
+    FROM bookings b
+    LEFT JOIN users c ON c.id = b.customer_id
+    LEFT JOIN users p ON p.id = b.partner_id
+    LEFT JOIN partners p2 ON p2.user_id = b.partner_id
+    WHERE b.id = $1
+  `, [bookingId]);
+
+  if (!bookingResult.rows[0]) return null;
+
+  const items = await query(`
+    SELECT * FROM booking_items
+    WHERE booking_id = $1
+    ORDER BY id ASC
+  `, [bookingId]);
+
+  const booking = bookingResult.rows[0];
+  booking.items = items.rows.map((item) => ({
+    id: item.service_id,
+    serviceId: item.service_id,
+    name: item.service_name_snapshot,
+    opt: item.option,
+    option: item.option,
+    qty: item.quantity,
+    quantity: item.quantity,
+    price: Number(item.unit_price),
+    unitPrice: Number(item.unit_price),
+    totalPrice: Number(item.total_price)
+  }));
+  booking.name = booking.customer_name_snapshot || booking.customer_name;
+  booking.phone = booking.customer_phone_snapshot || booking.customer_phone;
+  booking.email = booking.customer_email_snapshot || booking.customer_email;
+  booking.address = [booking.house, booking.street].filter(Boolean).join(', ');
+  booking.date = booking.preferred_date;
+  booking.time = booking.preferred_time;
+  booking.paymentStatus = booking.payment_status;
+  booking.assignedPartner = booking.partner_email || null;
+  booking.location = booking.partner_latitude != null && booking.partner_longitude != null
+    ? { lat: Number(booking.partner_latitude), lng: Number(booking.partner_longitude), updatedAt: booking.partner_location_updated_at }
+    : null;
+  return booking;
+}
+
+async function requireSession(req, res, next) {
+  const token = req.headers['x-session-token'];
+  if (!token) {
+    return res.status(401).json({ error: 'Please log in again.' });
+  }
+
+  try {
+    const user = await getUserFromSessionToken(token, 'sessions');
+    if (!user) {
+      return res.status(401).json({ error: 'Session expired or invalid.' });
+    }
+    req.user = user;
+    return next();
+  } catch (err) {
+    console.error('requireSession error:', err.message);
+    return res.status(500).json({ error: 'Authentication failed.' });
+  }
+}
+
+async function requireAdmin(req, res, next) {
+  const token = req.headers['x-admin-token'];
+  if (!token) {
+    return res.status(401).json({ error: 'Admin login required.' });
+  }
+
+  try {
+    const user = await getUserFromSessionToken(token, 'admin_sessions');
+    if (!user || user.role !== 'admin') {
+      return res.status(401).json({ error: 'Invalid admin session.' });
+    }
+    req.user = user;
+    return next();
+  } catch (err) {
+    console.error('requireAdmin error:', err.message);
+    return res.status(500).json({ error: 'Admin authentication failed.' });
+  }
+}
+
+async function issueVerifyTicket(identifier) {
+  const token = crypto.randomBytes(24).toString('hex');
+  await query(
+    `INSERT INTO verification_tickets (token, identifier, expires_at)
+     VALUES ($1, $2, NOW() + INTERVAL '15 minutes')`,
+    [token, identifier.trim().toLowerCase()]
+  );
+  return token;
+}
+async function consumeVerifyTicket(token, identifier) {
+  const result = await query(
+    `DELETE FROM verification_tickets
+     WHERE token = $1 AND identifier = $2 AND expires_at > NOW()
+     RETURNING token`,
+    [token, identifier.trim().toLowerCase()]
+  );
+  return result.rowCount === 1;
+}
+
+const DAILY_LIMIT = 3;
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+async function checkAndIncrementOtpLimit(identifier) {
+  const key = identifier.trim().toLowerCase();
+  const result = await query(
+    `INSERT INTO otp_limits (identifier, date, count, created_at, updated_at)
+     VALUES ($1, CURRENT_DATE, 1, NOW(), NOW())
+     ON CONFLICT (identifier) DO UPDATE SET
+       date = CURRENT_DATE,
+       count = CASE WHEN otp_limits.date = CURRENT_DATE THEN otp_limits.count + 1 ELSE 1 END,
+       updated_at = NOW()
+     WHERE otp_limits.date <> CURRENT_DATE OR otp_limits.count < $2
+     RETURNING count`,
+    [key, DAILY_LIMIT]
+  );
+  if (!result.rows[0]) return { allowed: false, remaining: 0 };
+  return { allowed: true, remaining: DAILY_LIMIT - Number(result.rows[0].count) };
+}
+
+const DEFAULT_SERVICES = [
+  { slug: 'single-door-fridge', name: 'Single Door Fridge', description: 'Single door fridge service', category: 'Home Appliances', base_price: 399 },
+  { slug: 'double-door-fridge', name: 'Double Door Fridge', description: 'Double door fridge service', category: 'Home Appliances', base_price: 499 },
+  { slug: 'deep-freezer', name: 'Deep Freezer', description: 'Deep freezer service', category: 'Home Appliances', base_price: 449 },
+  { slug: 'commercial-fridge', name: 'Commercial Fridge', description: 'Commercial fridge service', category: 'Home Appliances', base_price: 599 },
+  { slug: 'water-cooler', name: 'Water Cooler', description: 'Water cooler service', category: 'Home Appliances', base_price: 349 },
+  { slug: 'window-ac', name: 'Window AC', description: 'Window AC service', category: 'Cooling', base_price: 449 },
+  { slug: 'split-ac', name: 'Split AC', description: 'Split AC service', category: 'Cooling', base_price: 499 },
+  { slug: 'portable-ac', name: 'Portable AC', description: 'Portable AC service', category: 'Cooling', base_price: 429 },
+  { slug: 'semi-automatic-wm', name: 'Semi Automatic Washing Machine', description: 'Washing machine service', category: 'Laundry', base_price: 349 },
+  { slug: 'top-load-wm', name: 'Automatic Top Load Washing Machine', description: 'Top load washer service', category: 'Laundry', base_price: 449 },
+  { slug: 'front-load-wm', name: 'Automatic Front Load Washing Machine', description: 'Front load washer service', category: 'Laundry', base_price: 499 },
+  { slug: 'geyser', name: 'Geyser', description: 'Geyser service', category: 'Water Heating', base_price: 349 },
+  { slug: 'oven', name: 'Oven', description: 'Oven service', category: 'Kitchen Appliances', base_price: 399 },
+  { slug: 'ro-purifier', name: 'RO / Water Purifier', description: 'Purifier service', category: 'Water Purification', base_price: 299 },
+  { slug: 'chimney', name: 'Chimney', description: 'Chimney service', category: 'Kitchen Appliances', base_price: 399 },
+  { slug: 'room-heater', name: 'Room Heater', description: 'Heater service', category: 'Heating', base_price: 299 },
+  { slug: 'vacuum-cleaner', name: 'Vacuum Cleaner', description: 'Vacuum cleaner service', category: 'Cleaning', base_price: 299 },
+  { slug: 'led-tv', name: 'LED TV', description: 'TV service', category: 'Electronics', base_price: 449 },
+  { slug: 'dishwasher', name: 'Dishwasher', description: 'Dishwasher service', category: 'Kitchen Appliances', base_price: 449 },
+  { slug: 'house-wiring', name: 'House Wiring', description: 'Wiring service', category: 'Electrical', base_price: 349 },
+  { slug: 'air-cooler', name: 'Air Cooler', description: 'Air cooler service', category: 'Cooling', base_price: 299 },
+  { slug: 'sweet-cold-counter', name: 'Sweet Cold Counter', description: 'Sweet counter service', category: 'Commercial', base_price: 499 },
+  { slug: 'dd-free-dish', name: 'DTH / Dish Antenna', description: 'DTH service', category: 'Entertainment', base_price: 249 },
+  { slug: 'induction-chulha', name: 'Induction Cooktop', description: 'Induction cooktop service', category: 'Kitchen Appliances', base_price: 299 },
+  { slug: 'mixer-grinder', name: 'Mixer Grinder', description: 'Mixer grinder service', category: 'Kitchen Appliances', base_price: 249 },
+  { slug: 'ceiling-fan', name: 'Ceiling Fan', description: 'Ceiling fan service', category: 'Electrical', base_price: 199 },
+  { slug: 'exhaust-fan', name: 'Exhaust Fan', description: 'Exhaust fan service', category: 'Electrical', base_price: 199 },
+  { slug: 'electric-iron', name: 'Electric Iron', description: 'Iron service', category: 'Home Appliances', base_price: 199 }
+];
+
+async function seedServices() {
+  for (const service of DEFAULT_SERVICES) {
+    await query(
+      `INSERT INTO services (slug, name, description, category, base_price, options, active, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, true, NOW(), NOW())
+       ON CONFLICT (slug) DO NOTHING`,
+      [service.slug, service.name, service.description, service.category, safeNumber(service.base_price), JSON.stringify(SERVICE_OPTIONS[service.slug] || ['General Service'])]
+    );
+  }
+}
+
+async function ensureAdminBootstrap() {
+  const result = await query("SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin'");
+  const hasAdmin = Number(result.rows[0].count) > 0;
+  if (hasAdmin || !ADMIN_USERNAME || !ADMIN_PASSWORD) {
+    return;
+  }
+
+  const username = ADMIN_USERNAME.trim();
+  const existing = await query('SELECT id FROM users WHERE LOWER(name) = LOWER($1) AND role = $2', [username, 'admin']);
+  if (existing.rows[0]) {
+    return;
+  }
+
+  const passwordHash = bcrypt.hashSync(ADMIN_PASSWORD, 10);
+  const email = `${username.toLowerCase().replace(/[^a-z0-9]/g, '') || 'admin'}@internal.local`;
+  await query(`INSERT INTO users (name, email, phone, password_hash, role, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`, [username, email, '', passwordHash, 'admin']);
+  console.log(`Created initial admin account: ${username}`);
+}
+
+async function initDatabase() {
+  await query('SELECT 1');
+  await seedServices();
+  await ensureAdminBootstrap();
+}
+
+const STATUS_STAGES = ['Requested', 'Confirmed', 'Technician Assigned', 'On the Way', 'In Progress', 'Completed'];
+const COMMISSION_TIERS = [
+  { upTo: 1999, rate: 0.10 },
+  { upTo: 4999, rate: 0.15 },
+  { upTo: Number.MAX_SAFE_INTEGER, rate: 0.20 }
+];
+
+function calculateCommission(total) {
+  const amount = safeNumber(total, 0);
+  const tier = COMMISSION_TIERS.find((item) => amount <= item.upTo) || COMMISSION_TIERS[COMMISSION_TIERS.length - 1];
+  return Math.round(amount * tier.rate);
+}
+
+async function calculateBookingQuote(serviceEntries, couponValue) {
+  if (!Array.isArray(serviceEntries) || serviceEntries.length < 1 || serviceEntries.length > 20) {
+    const error = new Error('A booking must contain between 1 and 20 service items.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const normalizedItems = [];
+  let subtotal = 0;
+  for (const item of serviceEntries) {
+    const serviceId = String(item.serviceId || item.id || '').trim();
+    const quantity = Number(item.quantity ?? item.qty ?? 1);
+    const unitPrice = Number(item.unitPrice ?? item.price);
+    const option = item.option || item.opt || null;
+    if (!serviceId || !Number.isInteger(quantity) || quantity < 1 || quantity > 20 || !Number.isFinite(unitPrice) || unitPrice <= 0 || (option && String(option).length > 160)) {
+      const error = new Error('One or more booking items are invalid.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const serviceResult = await query('SELECT slug, name, base_price, options FROM services WHERE slug = $1 AND active = true', [serviceId]);
+    const service = serviceResult.rows[0];
+    if (!service) {
+      const error = new Error('One or more selected services are unavailable. Refresh the service list and try again.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+      const options = Array.isArray(service.options) ? service.options : [];
+      const optionIndex = options.indexOf(String(option || ''));
+      const expectedUnitPrice = Number(service.base_price) + optionIndex * 90;
+      if (optionIndex < 0 || Math.abs(unitPrice - expectedUnitPrice) > 0.001) {
+      const error = new Error(`Invalid price for ${service.name}. Refresh the service list and try again.`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const totalPrice = Math.round(unitPrice * quantity * 100) / 100;
+    subtotal += totalPrice;
+    normalizedItems.push({ serviceId: service.slug, name: service.name, option, quantity, unitPrice, totalPrice });
+  }
+
+  subtotal = Math.round(subtotal * 100) / 100;
+  const visitCharge = subtotal > 0 && subtotal < 499 ? 49 : 0;
+  const couponCode = String(couponValue || '').trim().toUpperCase();
+  const coupons = {
+    WELCOME50: { type: 'flat', value: 50, minOrder: 399 },
+    SAVE10: { type: 'percent', value: 10, minOrder: 499, maxDiscount: 150 },
+    REF50: { type: 'flat', value: 50, minOrder: 399 }
+  };
+  const coupon = coupons[couponCode];
+  let couponDiscount = 0;
+  if (coupon && subtotal >= coupon.minOrder) {
+    couponDiscount = coupon.type === 'flat' ? coupon.value : Math.round(subtotal * coupon.value / 100);
+    if (coupon.maxDiscount) couponDiscount = Math.min(couponDiscount, coupon.maxDiscount);
+    couponDiscount = Math.min(couponDiscount, subtotal);
+  }
+
+  return {
+    items: normalizedItems,
+    subtotal,
+    visitCharge,
+    coupon: coupon ? couponCode : null,
+    couponDiscount,
+    total: Math.max(0, Math.round((subtotal + visitCharge - couponDiscount) * 100) / 100)
+  };
+}
+
+app.get(['/', '/hometech-services.html'], (_req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'hometech-services.html'));
+});
+app.get('/admin.html', (_req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
+app.get('/partner.html', (_req, res) => res.sendFile(path.join(__dirname, 'partner.html')));
+
+app.get('/health', async (_req, res) => {
+  try {
+    await query('SELECT 1');
+    return res.json({ ok: true, paymentsEnabled, database: 'connected' });
+  } catch (err) {
+    console.error('/health error:', err.message);
+    return res.status(503).json({ ok: false, paymentsEnabled, database: 'disconnected' });
+  }
+});
+
+app.post('/api/send-otp', async (req, res) => {
+  try {
+    const { identifier, channel } = req.body || {};
+    if (!identifier || !channel) {
+      return res.status(400).json({ error: 'Identifier and channel are required.' });
+    }
+    if (channel !== 'sms' && channel !== 'email') {
+      return res.status(400).json({ error: 'Channel must be sms or email.' });
+    }
+
+    const limit = await checkAndIncrementOtpLimit(identifier);
+    if (!limit.allowed) {
+      return res.status(429).json({ error: 'Daily OTP limit reached for this number/email. Please try again tomorrow.' });
+    }
+
+    await twilioClient.verify.v2.services(TWILIO_VERIFY_SERVICE_SID).verifications.create({ to: identifier, channel });
+    return res.json({ success: true, remaining: limit.remaining });
+  } catch (err) {
+    console.error('send-otp error:', err.message);
+    return res.status(500).json({ error: 'Could not send OTP. Please check the value and try again.' });
+  }
+});
+
+app.post('/api/verify-otp', async (req, res) => {
+  try {
+    const { identifier, code } = req.body || {};
+    if (!identifier || !code) {
+      return res.status(400).json({ error: 'Identifier and code are required.' });
+    }
+
+    const check = await twilioClient.verify.v2.services(TWILIO_VERIFY_SERVICE_SID).verificationChecks.create({ to: identifier, code });
+    if (check.status === 'approved') {
+      const token = await issueVerifyTicket(identifier);
+      return res.json({ success: true, verifyToken: token });
+    }
+    return res.status(401).json({ error: 'Incorrect or expired OTP.' });
+  } catch (err) {
+    console.error('verify-otp error:', err.message);
+    return res.status(401).json({ error: 'Incorrect or expired OTP.' });
+  }
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { verifyToken, identifier, name, email, password, role, phone } = req.body || {};
+    if (!verifyToken || !identifier || !name || !email || !password || typeof password !== 'string') {
+      return res.status(400).json({ error: 'Missing required fields.' });
+    }
+    if (!await consumeVerifyTicket(verifyToken, identifier)) {
+      return res.status(401).json({ error: 'Verification expired or invalid.' });
+    }
+    const normalizedEmail = stripMdash(email).toLowerCase();
+    if (password.length < 6 || password.length > 200 || name.trim().length > 160 || normalizedEmail.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return res.status(400).json({ error: 'Enter a valid name and email, and a password between 6 and 200 characters.' });
+    }
+    const normalizedRole = role === 'partner' ? 'partner' : 'customer';
+    const passwordHash = bcrypt.hashSync(password, 10);
+    const phoneValue = phone || (String(identifier).startsWith('+') ? String(identifier) : '');
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const userResult = await client.query(
+        `INSERT INTO users (name, email, phone, password_hash, role, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+         RETURNING *`,
+        [name.trim(), normalizedEmail, phoneValue, passwordHash, normalizedRole]
+      );
+      const user = userResult.rows[0];
+      if (normalizedRole === 'partner') {
+        await client.query(
+          `INSERT INTO partners (user_id, status, wallet_balance, created_at, updated_at)
+           VALUES ($1, 'pending', 0, NOW(), NOW())`,
+          [user.id]
+        );
+      }
+      const token = makeToken();
+      await client.query(
+        `INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')`,
+        [token, user.id]
+      );
+      await client.query('COMMIT');
+      return res.status(201).json({ success: true, token, user: publicUser(user) });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      if (err.code === '23505') return res.status(409).json({ error: 'An account with this email already exists.' });
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('register error:', err.message);
+    return res.status(500).json({ error: 'Could not create account.' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    const result = await query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [String(email).trim().toLowerCase()]);
+    const user = result.rows[0];
+    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+      return res.status(401).json({ error: 'Incorrect email or password.' });
+    }
+
+    const token = await createSessionToken(user.id, 'sessions');
+    return res.json({ success: true, token, user: publicUser(user) });
+  } catch (err) {
+    console.error('login error:', err.message);
+    return res.status(500).json({ error: 'Could not log in.' });
+  }
+});
+
+app.get('/api/auth/me', requireSession, async (req, res) => {
+  try {
+    const partner = await getPartnerProfile(req.user.id);
+    return res.json({
+      user: publicUser(req.user),
+      partnerStatus: partner ? partner.status : null
+    });
+  } catch (err) {
+    console.error('auth/me error:', err.message);
+    return res.status(500).json({ error: 'Could not fetch profile.' });
+  }
+});
+
+app.post('/api/auth/logout', requireSession, async (req, res) => {
+  try {
+    await query('DELETE FROM sessions WHERE token = $1', [req.headers['x-session-token']]);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('logout error:', err.message);
+    return res.status(500).json({ error: 'Could not log out.' });
+  }
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { verifyToken, identifier, newPassword } = req.body || {};
+    if (!verifyToken || !identifier || !newPassword) {
+      return res.status(400).json({ error: 'Missing required fields.' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    }
+    if (!await consumeVerifyTicket(verifyToken, identifier)) {
+      return res.status(401).json({ error: 'Verification expired or invalid.' });
+    }
+
+    const normalizedIdentifier = String(identifier).trim();
+    const isEmail = normalizedIdentifier.includes('@');
+    const matching = await query(
+      isEmail
+        ? 'SELECT * FROM users WHERE LOWER(email) = LOWER($1)'
+        : 'SELECT * FROM users WHERE phone = $1',
+      [isEmail ? normalizedIdentifier.toLowerCase() : normalizedIdentifier]
+    );
+    if (!matching.rows.length) {
+      return res.status(404).json({ error: 'No account found for that phone/email.' });
+    }
+    if (matching.rows.length > 1) {
+      return res.status(409).json({ error: 'This phone is linked to multiple accounts. Verify and reset using the account email instead.' });
+    }
+    const user = matching.rows[0];
+
+    const passwordHash = bcrypt.hashSync(newPassword, 10);
+    await query('UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2', [passwordHash, user.id]);
+    await query('DELETE FROM sessions WHERE user_id = $1', [user.id]);
+    await query('DELETE FROM admin_sessions WHERE user_id = $1', [user.id]);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('reset-password error:', err.message);
+    return res.status(500).json({ error: 'Could not reset password.' });
+  }
+});
+
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required.' });
+    }
+
+    const result = await query("SELECT * FROM users WHERE role = 'admin' AND LOWER(name) = LOWER($1)", [String(username).trim()]);
+    const user = result.rows[0];
+    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+      return res.status(401).json({ error: 'Incorrect username or password.' });
+    }
+
+    const token = await createSessionToken(user.id, 'admin_sessions');
+    return res.json({ success: true, token, username: user.name });
+  } catch (err) {
+    console.error('admin login error:', err.message);
+    return res.status(500).json({ error: 'Admin login failed.' });
+  }
+});
+
+app.post('/api/admin/logout', requireAdmin, async (req, res) => {
+  try {
+    await query('DELETE FROM admin_sessions WHERE token = $1', [req.headers['x-admin-token']]);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('admin logout error:', err.message);
+    return res.status(500).json({ error: 'Could not log out.' });
+  }
+});
+
+app.post('/api/admin/change-credentials', requireAdmin, async (req, res) => {
+  try {
+    const { currentPassword, newUsername, newPassword } = req.body || {};
+    const user = req.user;
+
+    if (!currentPassword || !bcrypt.compareSync(currentPassword, user.password_hash)) {
+      return res.status(401).json({ error: 'Current password is incorrect.' });
+    }
+
+    let nextUsername = user.name;
+    let nextPasswordHash = user.password_hash;
+
+    if (newUsername && String(newUsername).trim()) {
+      nextUsername = String(newUsername).trim();
+    }
+    if (newPassword) {
+      if (newPassword.length < 6) {
+        return res.status(400).json({ error: 'New password must be at least 6 characters long.' });
+      }
+      nextPasswordHash = bcrypt.hashSync(newPassword, 10);
+    }
+
+    const collision = await query("SELECT id FROM users WHERE role = 'admin' AND LOWER(name) = LOWER($1) AND id != $2", [nextUsername, user.id]);
+    if (collision.rows[0]) {
+      return res.status(409).json({ error: 'That username is already taken.' });
+    }
+
+    await query(
+      `UPDATE users SET name = $1, password_hash = $2, updated_at = NOW() WHERE id = $3`,
+      [nextUsername, nextPasswordHash, user.id]
+    );
+
+    return res.json({ success: true, username: nextUsername });
+  } catch (err) {
+    console.error('change-credentials error:', err.message);
+    return res.status(500).json({ error: 'Could not update admin credentials.' });
+  }
+});
+
+app.get('/api/services', async (_req, res) => {
+  try {
+    const result = await query('SELECT * FROM services WHERE active = true ORDER BY name');
+    return res.json(result.rows.map((service) => ({
+      id: service.slug || String(service.id),
+      name: service.name,
+      description: service.description,
+      category: service.category,
+      options: Array.isArray(service.options) ? service.options : [],
+      price: Number(service.base_price),
+      image: service.image_url,
+      custom: service.is_custom,
+      basePrice: Number(service.base_price),
+      active: service.active
+    })));
+  } catch (err) {
+    console.error('services error:', err.message);
+    return res.status(500).json({ error: 'Could not load services.' });
+  }
+});
+
+app.post('/api/admin/services', requireAdmin, upload.single('image'), async (req, res) => {
+  try {
+    const { name, description, category, price } = req.body || {};
+    if (!name || !price) {
+      return res.status(400).json({ error: 'A service name and positive price are required.' });
+    }
+
+    const numericValue = safeNumber(price, 0);
+    if (numericValue <= 0) {
+      return res.status(400).json({ error: 'Price must be a positive number.' });
+    }
+
+    const slug = String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || `service-${Date.now()}`;
+    const result = await query(
+      `INSERT INTO services (slug, name, description, category, base_price, options, image_url, active, is_custom, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, true, true, NOW(), NOW())
+       ON CONFLICT (slug) DO UPDATE SET
+         name = EXCLUDED.name,
+         description = EXCLUDED.description,
+         category = EXCLUDED.category,
+         base_price = EXCLUDED.base_price,
+         options = EXCLUDED.options,
+         image_url = EXCLUDED.image_url,
+         is_custom = true,
+         updated_at = NOW()
+       RETURNING *`,
+      [slug, name, description || '', category || 'General', numericValue, JSON.stringify(['General Service']), req.file ? `/uploads/${req.file.filename}` : null]
+    );
+
+    return res.json({ success: true, item: { id: result.rows[0].slug || String(result.rows[0].id), ...result.rows[0] } });
+  } catch (err) {
+    console.error('admin services error:', err.message);
+    return res.status(500).json({ error: 'Could not save service.' });
+  }
+});
+
+app.patch('/api/admin/services/:id/price', requireAdmin, async (req, res) => {
+  try {
+    const numericValue = safeNumber(req.body && req.body.price, 0);
+    if (numericValue <= 0) {
+      return res.status(400).json({ error: 'Price must be a positive number.' });
+    }
+
+    const serviceId = req.params.id;
+    const result = await query('UPDATE services SET base_price = $1, updated_at = NOW() WHERE id::text = $2 OR slug = $2 RETURNING *', [numericValue, serviceId]);
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: 'Service not found.' });
+    }
+    return res.json({ success: true, price: Number(result.rows[0].base_price) });
+  } catch (err) {
+    console.error('service price update error:', err.message);
+    return res.status(500).json({ error: 'Could not update price.' });
+  }
+});
+
+app.post('/api/admin/services/:id/image', requireAdmin, upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Choose an image to upload.' });
+  try {
+    const result = await query(
+      'UPDATE services SET image_url = $1, updated_at = NOW() WHERE slug = $2 OR id::text = $2 RETURNING image_url',
+      [`/uploads/${req.file.filename}`, req.params.id]
+    );
+    if (!result.rows[0]) {
+      fs.unlink(path.join(uploadDir, req.file.filename), () => {});
+      return res.status(404).json({ error: 'Service not found.' });
+    }
+    return res.json({ success: true, image: result.rows[0].image_url });
+  } catch (err) {
+    fs.unlink(path.join(uploadDir, req.file.filename), () => {});
+    console.error('service image upload error:', err.message);
+    return res.status(500).json({ error: 'Could not save service image.' });
+  }
+});
+
+app.delete('/api/admin/services/:id/image', requireAdmin, async (req, res) => {
+  try {
+    const result = await query(
+      'UPDATE services SET image_url = NULL, updated_at = NOW() WHERE slug = $1 OR id::text = $1 RETURNING image_url',
+      [req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Service not found.' });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('service image removal error:', err.message);
+    return res.status(500).json({ error: 'Could not remove service image.' });
+  }
+});
+
+app.delete('/api/admin/services/:id', requireAdmin, async (req, res) => {
+  try {
+    const result = await query(
+      `UPDATE services SET active = false, updated_at = NOW()
+       WHERE (slug = $1 OR id::text = $1) AND is_custom = true
+       RETURNING id`,
+      [req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Custom service not found.' });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('service removal error:', err.message);
+    return res.status(500).json({ error: 'Could not remove service.' });
+  }
+});
+
+app.get('/api/gallery', async (_req, res) => {
+  try {
+    const result = await query('SELECT * FROM gallery_items ORDER BY created_at DESC');
+    return res.json(result.rows);
+  } catch (err) {
+    console.error('gallery read error:', err.message);
+    return res.status(500).json({ error: 'Could not load gallery.' });
+  }
+});
+
+app.post('/api/admin/gallery', requireAdmin, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded.' });
+    }
+
+    const { title, category, type } = req.body || {};
+    const result = await query(
+      `INSERT INTO gallery_items (title, category, type, src, created_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       RETURNING *`,
+      [title || 'Untitled', category || '', type === 'video' ? 'video' : 'image', `/uploads/${req.file.filename}`]
+    );
+
+    return res.json({ success: true, item: result.rows[0] });
+  } catch (err) {
+    console.error('gallery upload error:', err.message);
+    return res.status(500).json({ error: 'Could not upload gallery item.' });
+  }
+});
+
+app.delete('/api/admin/gallery/:id', requireAdmin, async (req, res) => {
+  try {
+    const result = await query('DELETE FROM gallery_items WHERE id = $1 RETURNING src', [req.params.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: 'Gallery item not found.' });
+    const filename = path.basename(result.rows[0].src || '');
+    if (filename && filename !== '.' && filename !== path.basename(uploadDir)) {
+      fs.unlink(path.join(uploadDir, filename), () => {});
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('gallery removal error:', err.message);
+    return res.status(500).json({ error: 'Could not delete gallery item.' });
+  }
+});
+
+app.get('/api/settings', async (_req, res) => {
+  try {
+    const result = await query('SELECT key, value FROM site_settings');
+    const settings = {};
+    for (const row of result.rows) settings[row.key] = row.value;
+    return res.json(settings);
+  } catch (err) {
+    console.error('settings read error:', err.message);
+    return res.status(500).json({ error: 'Could not load settings.' });
+  }
+});
+
+app.post('/api/admin/settings', requireAdmin, upload.single('logo'), async (req, res) => {
+  try {
+    const items = [];
+    if (req.body && typeof req.body.siteName === 'string' && req.body.siteName.trim()) {
+      items.push(['siteName', req.body.siteName.trim()]);
+    }
+    if (req.file) {
+      items.push(['logoUrl', `/uploads/${req.file.filename}`]);
+    }
+
+    for (const [key, value] of items) {
+      await query(
+        `INSERT INTO site_settings (key, value, created_at, updated_at)
+         VALUES ($1, $2, NOW(), NOW())
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+        [key, value]
+      );
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('settings save error:', err.message);
+    return res.status(500).json({ error: 'Could not save settings.' });
+  }
+});
+
+app.post('/api/partners/apply', requireSession, upload.single('photo'), async (req, res) => {
+  try {
+    if (req.user.role !== 'partner') {
+      return res.status(403).json({ error: 'Only partner accounts can apply.' });
+    }
+
+    const { city, area, expertise, years, address, aadharNumber } = req.body || {};
+    const normalizedAadhar = aadharNumber ? String(aadharNumber).replace(/\s+/g, '').slice(-4) : null;
+
+    await query(
+      `INSERT INTO partners (user_id, city, area, expertise, years, address, aadhar_last4, photo_url, status, wallet_balance, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', 0, NOW(), NOW())
+       ON CONFLICT (user_id) DO UPDATE SET
+         city = EXCLUDED.city,
+         area = EXCLUDED.area,
+         expertise = EXCLUDED.expertise,
+         years = EXCLUDED.years,
+         address = EXCLUDED.address,
+         aadhar_last4 = EXCLUDED.aadhar_last4,
+         photo_url = EXCLUDED.photo_url,
+         status = CASE WHEN partners.status = 'approved' THEN 'approved' ELSE 'pending' END,
+         updated_at = NOW()`,
+      [req.user.id, city || null, area || null, expertise || null, years || null, address || null, normalizedAadhar, req.file ? `/uploads/${req.file.filename}` : null]
+    );
+
+    const partner = await getPartnerProfile(req.user.id);
+    return res.json({ success: true, status: partner ? partner.status : 'pending' });
+  } catch (err) {
+    console.error('partner apply error:', err.message);
+    return res.status(500).json({ error: 'Could not save partner application.' });
+  }
+});
+
+app.get('/api/partners', requireAdmin, async (_req, res) => {
+  try {
+    const result = await query(`
+      SELECT p.*, u.name, u.email, u.phone, COUNT(t.id)::int AS transaction_count
+      FROM partners p
+      JOIN users u ON u.id = p.user_id
+      LEFT JOIN partner_wallet_transactions t ON t.partner_id = p.id
+      GROUP BY p.id, u.id
+      ORDER BY p.created_at DESC
+    `);
+
+    const rows = result.rows.map((partner) => ({
+      ...partner,
+      aadharNumber: partner.aadhar_last4 ? `••••••••${partner.aadhar_last4}` : null,
+      email: partner.email,
+      name: partner.name,
+      phone: partner.phone,
+      photo: partner.photo_url,
+      walletBalance: Number(partner.wallet_balance),
+      transactionCount: partner.transaction_count,
+      status: partner.status
+    }));
+    return res.json(rows);
+  } catch (err) {
+    console.error('partners list error:', err.message);
+    return res.status(500).json({ error: 'Could not load partners.' });
+  }
+});
+
+app.get('/api/admin/customers', requireAdmin, async (_req, res) => {
+  try {
+    const result = await query(`
+      SELECT u.id, u.name, u.email, u.phone, u.created_at,
+             COUNT(b.id)::int AS booking_count,
+             MAX(b.created_at) AS latest_booking_at
+      FROM users u
+      LEFT JOIN bookings b ON b.customer_id = u.id
+      WHERE u.role = 'customer'
+      GROUP BY u.id
+      ORDER BY u.created_at DESC
+    `);
+    const customers = [];
+    for (const customer of result.rows) {
+      const bookingIds = await query('SELECT id FROM bookings WHERE customer_id = $1 ORDER BY created_at DESC', [customer.id]);
+      const bookings = await Promise.all(bookingIds.rows.map((booking) => getFullBooking(booking.id)));
+      customers.push({
+        ...customer,
+        bookingCount: customer.booking_count,
+        latestBookingAt: customer.latest_booking_at,
+        bookings
+      });
+    }
+    return res.json(customers);
+  } catch (err) {
+    console.error('admin customers error:', err.message);
+    return res.status(500).json({ error: 'Could not load customers.' });
+  }
+});
+
+app.patch('/api/partners/:email/status', requireAdmin, async (req, res) => {
+  try {
+    const { status } = req.body || {};
+    if (!['pending', 'approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Status must be pending, approved, or rejected.' });
+    }
+    const email = String(req.params.email).trim().toLowerCase();
+    const result = await query(
+      `UPDATE partners p
+       SET status = $1, updated_at = NOW()
+       FROM users u
+       WHERE u.id = p.user_id AND LOWER(u.email) = LOWER($2)
+       RETURNING p.*`,
+      [status, email]
+    );
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: 'Partner not found.' });
+    }
+    return res.json({ success: true, status });
+  } catch (err) {
+    console.error('partner status error:', err.message);
+    return res.status(500).json({ error: 'Could not update partner status.' });
+  }
+});
+
+app.post('/api/bookings', requireSession, async (req, res) => {
+  try {
+    if (req.user.role !== 'customer') {
+      return res.status(403).json({ error: 'Customer account required.' });
+    }
+
+    const body = req.body || {};
+    const bookingId = String(body.id || body.bookingId || `BK-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`);
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(bookingId)) {
+      return res.status(400).json({ error: 'Invalid booking ID.' });
+    }
+    const customerAddress = body.address || {};
+    const serviceEntries = Array.isArray(body.serviceItems) ? body.serviceItems : (Array.isArray(body.items) ? body.items : []);
+    const paymentMethod = body.paymentMethod === 'online' ? 'razorpay' : body.paymentMethod === 'cod' ? 'cod' : null;
+    if (!paymentMethod) {
+      return res.status(400).json({ error: 'Choose a valid payment method.' });
+    }
+    const quote = await calculateBookingQuote(serviceEntries, body.coupon);
+    const normalizedItems = quote.items;
+    const visitCharge = quote.visitCharge;
+    const couponDiscount = quote.couponDiscount;
+    const bookingTotal = quote.total;
+
+    const booking = {
+      id: bookingId,
+      customer_id: req.user.id,
+      status: 'Requested',
+      payment_status: paymentMethod === 'razorpay' ? 'paid' : 'pending',
+      payment_method: paymentMethod,
+      total: bookingTotal,
+      coupon: quote.coupon,
+      coupon_discount: couponDiscount,
+      visit_charge: visitCharge,
+      customer_name_snapshot: body.name || req.user.name,
+      customer_phone_snapshot: body.phone || req.user.phone,
+      customer_email_snapshot: body.email || req.user.email,
+      house: body.house || customerAddress.house || null,
+      street: body.street || customerAddress.street || null,
+      area: body.area || customerAddress.area || null,
+      city: body.city || customerAddress.city || null,
+      pin: body.pin || customerAddress.pin || null,
+      customer_latitude: body.customerLocation && Number.isFinite(Number(body.customerLocation.lat)) ? Number(body.customerLocation.lat) : null,
+      customer_longitude: body.customerLocation && Number.isFinite(Number(body.customerLocation.lng)) ? Number(body.customerLocation.lng) : null,
+      customer_location_updated_at: body.customerLocation && body.customerLocation.updatedAt ? new Date(body.customerLocation.updatedAt) : null,
+      preferred_date: body.preferredDate || body.date || null,
+      preferred_time: body.preferredTime || body.time || null,
+      metadata: JSON.stringify({ createdFrom: 'web' })
+    };
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      await client.query(
+        `INSERT INTO bookings (
+          id, customer_id, status, payment_status, payment_method, total, coupon, coupon_discount, visit_charge,
+          customer_name_snapshot, customer_phone_snapshot, customer_email_snapshot,
+          house, street, area, city, pin,
+          customer_latitude, customer_longitude, customer_location_updated_at,
+          preferred_date, preferred_time, metadata, created_at, updated_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,NOW(),NOW())`,
+        [
+          booking.id,
+          booking.customer_id,
+          booking.status,
+          booking.payment_status,
+          booking.payment_method,
+          booking.total,
+          booking.coupon,
+          booking.coupon_discount,
+          booking.visit_charge,
+          booking.customer_name_snapshot,
+          booking.customer_phone_snapshot,
+          booking.customer_email_snapshot,
+          booking.house,
+          booking.street,
+          booking.area,
+          booking.city,
+          booking.pin,
+          booking.customer_latitude,
+          booking.customer_longitude,
+          booking.customer_location_updated_at,
+          booking.preferred_date,
+          booking.preferred_time,
+          booking.metadata
+        ]
+      );
+      if (paymentMethod === 'razorpay') {
+        const paymentOrderId = String(body.paymentOrderId || '');
+        const paymentId = String(body.paymentId || '');
+        const paymentOrder = await client.query(
+          `SELECT * FROM payment_orders
+           WHERE order_id = $1 AND user_id = $2 AND booking_id = $3 AND purpose = 'booking' AND status = 'verified'
+           FOR UPDATE`,
+          [paymentOrderId, req.user.id, booking.id]
+        );
+        if (!paymentOrder.rows[0] || Number(paymentOrder.rows[0].amount) !== bookingTotal || paymentOrder.rows[0].payment_id !== paymentId) {
+          const error = new Error('A verified payment for this booking is required.');
+          error.statusCode = 402;
+          throw error;
+        }
+      }
+
+      for (const item of normalizedItems) {
+        await client.query(
+          `INSERT INTO booking_items (booking_id, service_id, service_name_snapshot, option, quantity, unit_price, total_price)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            booking.id,
+            item.serviceId,
+            item.name,
+            item.option,
+            item.quantity,
+            item.unitPrice,
+            item.totalPrice
+          ]
+        );
+      }
+
+      if (paymentMethod === 'razorpay') {
+        const paymentOrderId = String(body.paymentOrderId);
+        const paymentId = String(body.paymentId);
+        await client.query(
+          `UPDATE payment_orders SET status = 'consumed', updated_at = NOW() WHERE order_id = $1`,
+          [paymentOrderId]
+        );
+        await client.query(
+          `INSERT INTO payments (booking_id, user_id, provider, order_id, payment_id, signature_verified, amount, status, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+          [booking.id, req.user.id, 'razorpay', paymentOrderId, paymentId, true, bookingTotal, 'paid']
+        );
+      }
+
+      await client.query('COMMIT');
+      const savedBooking = await getFullBooking(booking.id);
+      return res.status(201).json({
+        success: true,
+        bookingId: booking.id,
+        status: 'Requested',
+        total: bookingTotal,
+        paymentStatus: booking.payment_status,
+        booking: savedBooking
+      });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('booking create error:', err.message);
+    return res.status(err.statusCode || (err.code === '23505' ? 409 : 500)).json({ error: err.statusCode ? err.message : err.code === '23505' ? 'Booking ID already exists.' : 'Booking could not be saved. Please try again.' });
+  }
+});
+
+app.get('/api/bookings/my', requireSession, async (req, res) => {
+  try {
+    if (req.user.role !== 'customer') {
+      return res.status(403).json({ error: 'Customer account required.' });
+    }
+
+    const result = await query('SELECT * FROM bookings WHERE customer_id = $1 ORDER BY created_at DESC', [req.user.id]);
+    const bookings = [];
+    for (const row of result.rows) {
+      const booking = await getFullBooking(row.id);
+      bookings.push({ ...booking, total: Number(row.total) });
+    }
+    return res.json(bookings);
+  } catch (err) {
+    console.error('customer bookings error:', err.message);
+    return res.status(500).json({ error: 'Could not load your bookings.' });
+  }
+});
+
+app.get('/api/bookings/:id', requireSession, async (req, res) => {
+  try {
+    const booking = await getFullBooking(req.params.id);
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found.' });
+    }
+
+    const isAdmin = req.user.role === 'admin';
+    const isCustomer = req.user.role === 'customer' && Number(booking.customer_id) === Number(req.user.id);
+    const isPartner = req.user.role === 'partner' && Number(booking.partner_id) === Number(req.user.id);
+
+    if (!isAdmin && !isCustomer && !isPartner) {
+      return res.status(403).json({ error: 'You do not have access to this booking.' });
+    }
+
+    return res.json({
+      ...booking,
+      items: booking.items || [],
+      total: Number(booking.total),
+      customer: isAdmin || isPartner || isCustomer ? {
+        name: booking.customer_name,
+        phone: booking.customer_phone,
+        email: booking.customer_email,
+        address: booking.address,
+        city: booking.city,
+        pin: booking.pin
+      } : null,
+      partner: booking.partner_name ? { name: booking.partner_name, email: booking.partner_email, phone: booking.partner_phone } : null,
+      location: booking.location
+    });
+  } catch (err) {
+    console.error('booking fetch error:', err.message);
+    return res.status(500).json({ error: 'Could not fetch booking.' });
+  }
+});
+
+app.get('/api/bookings', requireAdmin, async (_req, res) => {
+  try {
+    const result = await query(`
+            SELECT b.*, c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone,
+              p.name AS partner_name, p.email AS partner_email, p.phone AS partner_phone,
+             partner_profile.status AS partner_status
+      FROM bookings b
+      LEFT JOIN users c ON c.id = b.customer_id
+      LEFT JOIN users p ON p.id = b.partner_id
+      LEFT JOIN partners partner_profile ON partner_profile.user_id = b.partner_id
+      ORDER BY b.created_at DESC
+    `);
+
+    const rows = [];
+    for (const row of result.rows) {
+      const booking = await getFullBooking(row.id);
+      rows.push({
+        ...booking,
+        assignedPartner: booking.partner_email || null,
+        customer: { name: booking.customer_name, phone: booking.customer_phone, email: booking.customer_email },
+        partner: booking.partner_name ? { name: booking.partner_name, email: booking.partner_email, phone: booking.partner_phone, status: booking.partner_status } : null,
+        total: Number(row.total)
+      });
+    }
+    return res.json(rows);
+  } catch (err) {
+    console.error('admin bookings error:', err.message);
+    return res.status(500).json({ error: 'Could not load bookings.' });
+  }
+});
+
+app.patch('/api/bookings/:id/status', requireAdmin, async (req, res) => {
+  try {
+    const { status } = req.body || {};
+    if (!STATUS_STAGES.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status.' });
+    }
+
+    const result = await query('UPDATE bookings SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *', [status, req.params.id]);
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: 'Booking not found.' });
+    }
+    return res.json({ success: true, status });
+  } catch (err) {
+    console.error('status update error:', err.message);
+    return res.status(500).json({ error: 'Could not update status.' });
+  }
+});
+
+app.patch('/api/bookings/:id/assign', requireAdmin, async (req, res) => {
+  try {
+    const { partnerEmail } = req.body || {};
+    const normalizedEmail = String(partnerEmail || '').trim().toLowerCase();
+    if (!normalizedEmail) {
+      return res.status(400).json({ error: 'Partner email is required.' });
+    }
+
+    const partnerResult = await query(
+      `SELECT p.id AS partner_record_id, p.status, u.id AS user_id, u.email, u.name
+       FROM partners p
+       JOIN users u ON u.id = p.user_id
+       WHERE LOWER(u.email) = LOWER($1)`,
+      [normalizedEmail]
+    );
+    const partner = partnerResult.rows[0];
+    if (!partner || partner.status !== 'approved') {
+      return res.status(400).json({ error: 'Select an approved partner.' });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const bookingResult = await client.query('SELECT * FROM bookings WHERE id = $1 FOR UPDATE', [req.params.id]);
+      const booking = bookingResult.rows[0];
+      if (!booking) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Booking not found.' });
+      }
+      if (booking.partner_id) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'This booking is already assigned. Unassign it before changing partners.' });
+      }
+
+      const amount = calculateCommission(booking.total || 0);
+      const debit = await client.query(
+        `UPDATE partners SET wallet_balance = wallet_balance - $1, updated_at = NOW()
+         WHERE user_id = $2 AND status = 'approved' AND wallet_balance >= $1
+         RETURNING id`,
+        [amount, partner.user_id]
+      );
+      if (!debit.rows[0]) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `Partner wallet is too low to accept this booking. Required: ₹${amount}.` });
+      }
+
+      await client.query(
+        `UPDATE bookings SET partner_id = $1, status = 'Confirmed', updated_at = NOW() WHERE id = $2 RETURNING *`,
+        [partner.user_id, req.params.id]
+      );
+      await client.query(
+        `INSERT INTO partner_wallet_transactions (partner_id, type, amount, reason, booking_id, created_at)
+         VALUES ($1, 'debit', $2, $3, $4, NOW())`,
+        [debit.rows[0].id, amount, `Commission for booking ${req.params.id}`, req.params.id]
+      );
+      await client.query('COMMIT');
+      return res.json({ success: true, commission: amount });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('assign booking error:', err.message);
+    return res.status(500).json({ error: 'Could not assign partner.' });
+  }
+});
+
+app.get('/api/partner/bookings', requireSession, async (req, res) => {
+  try {
+    if (req.user.role !== 'partner') {
+      return res.status(403).json({ error: 'Partner account required.' });
+    }
+
+    const result = await query(
+      `SELECT b.*
+       FROM bookings b
+       WHERE b.partner_id = $1
+       ORDER BY b.created_at DESC`,
+      [req.user.id]
+    );
+
+    const rows = [];
+    for (const row of result.rows) {
+      const booking = await getFullBooking(row.id);
+      rows.push({
+        ...booking,
+        customer: { name: booking.customer_name, phone: booking.customer_phone, email: booking.customer_email },
+        total: Number(row.total)
+      });
+    }
+    return res.json(rows);
+  } catch (err) {
+    console.error('partner bookings error:', err.message);
+    return res.status(500).json({ error: 'Could not load partner jobs.' });
+  }
+});
+
+app.patch('/api/partner/bookings/:id/status', requireSession, async (req, res) => {
+  try {
+    if (req.user.role !== 'partner') {
+      return res.status(403).json({ error: 'Partner account required.' });
+    }
+
+    const { status } = req.body || {};
+    if (!STATUS_STAGES.includes(status)) {
+      return res.status(400).json({ error: 'Invalid booking status.' });
+    }
+
+    const booking = await getFullBooking(req.params.id);
+    if (!booking || Number(booking.partner_id) !== Number(req.user.id)) {
+      return res.status(404).json({ error: 'Booking not found or not assigned to you.' });
+    }
+
+    await query('UPDATE bookings SET status = $1, updated_at = NOW() WHERE id = $2', [status, req.params.id]);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('partner status update error:', err.message);
+    return res.status(500).json({ error: 'Could not update booking status.' });
+  }
+});
+
+app.patch('/api/partner/bookings/:id/location', requireSession, async (req, res) => {
+  try {
+    if (req.user.role !== 'partner') {
+      return res.status(403).json({ error: 'Partner account required.' });
+    }
+
+    const { lat, lng } = req.body || {};
+    const latitude = Number(lat);
+    const longitude = Number(lng);
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return res.status(400).json({ error: 'Valid latitude and longitude are required.' });
+    }
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      return res.status(400).json({ error: 'Coordinates out of range.' });
+    }
+
+    const booking = await getFullBooking(req.params.id);
+    if (!booking || Number(booking.partner_id) !== Number(req.user.id)) {
+      return res.status(404).json({ error: 'Booking not found or not assigned to you.' });
+    }
+
+    await query(
+      `UPDATE bookings SET partner_latitude = $1, partner_longitude = $2, partner_location_updated_at = NOW(), updated_at = NOW() WHERE id = $3`,
+      [latitude, longitude, req.params.id]
+    );
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('partner location update error:', err.message);
+    return res.status(500).json({ error: 'Could not update partner location.' });
+  }
+});
+
+app.post('/api/reviews', requireSession, async (req, res) => {
+  try {
+    if (req.user.role !== 'customer') {
+      return res.status(403).json({ error: 'Customer account required.' });
+    }
+    const { serviceId, bookingId, stars, comment } = req.body || {};
+    const rating = Number(stars);
+    if (!serviceId || !bookingId || !Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'A booking, service, and 1–5 star rating are required.' });
+    }
+    if (String(comment || '').length > 2000) {
+      return res.status(400).json({ error: 'Review comments must be 2,000 characters or fewer.' });
+    }
+
+    const booking = await getFullBooking(bookingId);
+    if (!booking || Number(booking.customer_id) !== Number(req.user.id)) {
+      return res.status(403).json({ error: 'You can only review your own booking.' });
+    }
+    if (booking.status !== 'Completed') {
+      return res.status(409).json({ error: 'A booking can only be reviewed after it is completed.' });
+    }
+    if (!booking.items.some((item) => item.serviceId === String(serviceId))) {
+      return res.status(400).json({ error: 'That service is not part of this booking.' });
+    }
+
+    await query(
+      `INSERT INTO reviews (service_id, booking_id, user_id, name, stars, comment, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [String(serviceId), bookingId, req.user.id, req.user.name, rating, String(comment || '').trim()]
+    );
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('review error:', err.message);
+    if (err.code === '23505') return res.status(409).json({ error: 'You have already reviewed this service for the booking.' });
+    return res.status(500).json({ error: 'Could not submit review.' });
+  }
+});
+
+app.get('/api/reviews/:serviceId', async (req, res) => {
+  try {
+    const result = await query('SELECT * FROM reviews WHERE service_id = $1 ORDER BY created_at DESC', [req.params.serviceId]);
+    return res.json(result.rows);
+  } catch (err) {
+    console.error('reviews read error:', err.message);
+    return res.status(500).json({ error: 'Could not load reviews.' });
+  }
+});
+
+function validRazorpaySignature(orderId, paymentId, signature) {
+  const expected = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(`${orderId}|${paymentId}`).digest();
+  let supplied;
+  try {
+    supplied = Buffer.from(String(signature), 'hex');
+  } catch {
+    return false;
+  }
+  return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+}
+
+app.post('/api/create-order', requireSession, async (req, res) => {
+  if (req.user.role !== 'customer') {
+    return res.status(403).json({ error: 'Customer account required.' });
+  }
+  if (!paymentsEnabled) {
+    return res.status(503).json({ error: 'Online payments are not configured on this server.' });
+  }
+
+  try {
+    const { bookingId, items, coupon } = req.body || {};
+    if (!bookingId || !/^[A-Za-z0-9_-]{1,64}$/.test(String(bookingId))) {
+      return res.status(400).json({ error: 'A valid booking ID is required.' });
+    }
+    const quote = await calculateBookingQuote(items, coupon);
+    if (quote.total <= 0) return res.status(400).json({ error: 'A positive payment amount is required.' });
+
+    const order = await razorpay.orders.create({
+      amount: Math.round(quote.total * 100),
+      currency: 'INR',
+      receipt: `booking_${crypto.randomBytes(8).toString('hex')}`
+    });
+    await query(
+      `INSERT INTO payment_orders (order_id, user_id, booking_id, purpose, amount, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 'booking', $4, 'created', NOW(), NOW())`,
+      [order.id, req.user.id, String(bookingId), quote.total]
+    );
+    return res.json({
+      ...order,
+      keyId: RAZORPAY_KEY_ID,
+      quote: { subtotal: quote.subtotal, visitCharge: quote.visitCharge, couponDiscount: quote.couponDiscount, total: quote.total }
+    });
+  } catch (err) {
+    console.error('create-order error:', err.message);
+    return res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : 'Could not create payment order.' });
+  }
+});
+
+app.post('/api/verify-payment', requireSession, async (req, res) => {
+  if (req.user.role !== 'customer') {
+    return res.status(403).json({ error: 'Customer account required.' });
+  }
+  if (!paymentsEnabled) {
+    return res.status(503).json({ error: 'Online payments are not configured on this server.' });
+  }
+
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ error: 'Missing payment verification fields.' });
+    }
+
+    if (!validRazorpaySignature(razorpay_order_id, razorpay_payment_id, razorpay_signature)) {
+      return res.status(400).json({ error: 'Payment signature mismatch.' });
+    }
+
+    const result = await query(
+      `UPDATE payment_orders
+       SET status = 'verified', payment_id = $1, verified_at = NOW(), updated_at = NOW()
+       WHERE order_id = $2 AND user_id = $3 AND purpose = 'booking' AND status = 'created'
+       RETURNING order_id`,
+      [razorpay_payment_id, razorpay_order_id, req.user.id]
+    );
+    if (!result.rowCount) {
+      const alreadyVerified = await query(
+        `SELECT 1 FROM payment_orders WHERE order_id = $1 AND user_id = $2 AND purpose = 'booking' AND status = 'verified' AND payment_id = $3`,
+        [razorpay_order_id, req.user.id, razorpay_payment_id]
+      );
+      if (!alreadyVerified.rowCount) return res.status(404).json({ error: 'Payment order not found or already used.' });
+    }
+    return res.json({ success: true, orderId: razorpay_order_id, paymentId: razorpay_payment_id });
+  } catch (err) {
+    console.error('verify-payment error:', err.message);
+    return res.status(500).json({ error: 'Could not verify payment.' });
+  }
+});
+
+app.post('/api/partner/wallet/create-order', requireSession, async (req, res) => {
+  try {
+    if (req.user.role !== 'partner') {
+      return res.status(403).json({ error: 'Partner account required.' });
+    }
+    if (!paymentsEnabled) {
+      return res.status(503).json({ error: 'Online payments are not configured on this server.' });
+    }
+
+    const amount = safeNumber(req.body && req.body.amount, 0);
+    if (amount < 500) {
+      return res.status(400).json({ error: 'Minimum recharge is ₹500.' });
+    }
+
+    const order = await razorpay.orders.create({
+      amount: Math.round(amount * 100),
+      currency: 'INR',
+      receipt: `wallet_${crypto.randomBytes(8).toString('hex')}`
+    });
+    await query(
+      `INSERT INTO payment_orders (order_id, user_id, purpose, amount, status, created_at, updated_at)
+       VALUES ($1, $2, 'wallet', $3, 'created', NOW(), NOW())`,
+      [order.id, req.user.id, amount]
+    );
+    return res.json({ ...order, keyId: RAZORPAY_KEY_ID });
+  } catch (err) {
+    console.error('wallet create-order error:', err.message);
+    return res.status(500).json({ error: 'Could not create wallet order.' });
+  }
+});
+
+app.post('/api/partner/wallet/verify-payment', requireSession, async (req, res) => {
+  try {
+    if (req.user.role !== 'partner') {
+      return res.status(403).json({ error: 'Partner account required.' });
+    }
+    if (!paymentsEnabled) {
+      return res.status(503).json({ error: 'Online payments are not configured on this server.' });
+    }
+
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ error: 'Missing payment verification fields.' });
+    }
+
+    if (!validRazorpaySignature(razorpay_order_id, razorpay_payment_id, razorpay_signature)) {
+      return res.status(400).json({ error: 'Payment signature mismatch.' });
+    }
+
+    const client = await pool.connect();
+    let newBalance;
+    try {
+      await client.query('BEGIN');
+      const orderResult = await client.query(
+        `SELECT * FROM payment_orders
+         WHERE order_id = $1 AND user_id = $2 AND purpose = 'wallet' AND status = 'created'
+         FOR UPDATE`,
+        [razorpay_order_id, req.user.id]
+      );
+      const order = orderResult.rows[0];
+      if (!order) {
+        const alreadyCredited = await client.query(
+          `SELECT p.wallet_balance FROM payment_orders o JOIN partners p ON p.user_id = o.user_id
+           WHERE o.order_id = $1 AND o.user_id = $2 AND o.status = 'consumed' AND o.payment_id = $3`,
+          [razorpay_order_id, req.user.id, razorpay_payment_id]
+        );
+        if (!alreadyCredited.rows[0]) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Wallet payment order not found or already used.' });
+        }
+        await client.query('COMMIT');
+        return res.json({ success: true, balance: Number(alreadyCredited.rows[0].wallet_balance) });
+      }
+
+      const partnerResult = await client.query('SELECT * FROM partners WHERE user_id = $1 FOR UPDATE', [req.user.id]);
+      const partner = partnerResult.rows[0];
+      if (!partner) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Partner profile not found.' });
+      }
+      newBalance = Number(partner.wallet_balance) + Number(order.amount);
+      await client.query('UPDATE partners SET wallet_balance = $1, updated_at = NOW() WHERE user_id = $2', [newBalance, req.user.id]);
+      await client.query(
+        `INSERT INTO partner_wallet_transactions (partner_id, type, amount, reason, payment_id, created_at)
+         VALUES ($1, 'credit', $2, 'Wallet recharge', $3, NOW())`,
+        [partner.id, order.amount, razorpay_payment_id]
+      );
+      await client.query(
+        `UPDATE payment_orders SET status = 'consumed', payment_id = $1, verified_at = NOW(), updated_at = NOW() WHERE order_id = $2`,
+        [razorpay_payment_id, razorpay_order_id]
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    return res.json({ success: true, balance: newBalance });
+  } catch (err) {
+    console.error('wallet verify-payment error:', err.message);
+    return res.status(500).json({ error: 'Could not verify wallet payment.' });
+  }
+});
+
+app.get('/api/partner/wallet', requireSession, async (req, res) => {
+  try {
+    if (req.user.role !== 'partner') {
+      return res.status(403).json({ error: 'Partner account required.' });
+    }
+
+    const partner = await getPartnerProfile(req.user.id);
+    if (!partner) {
+      return res.status(404).json({ error: 'Partner record not found.' });
+    }
+
+    const txns = await query('SELECT * FROM partner_wallet_transactions WHERE partner_id = $1 ORDER BY created_at DESC', [partner.id]);
+    return res.json({
+      balance: Number(partner.wallet_balance),
+      transactions: txns.rows.map((transaction) => ({ ...transaction, date: transaction.created_at })),
+      minRecharge: 500,
+      commissionTiers: [
+        '10% for bookings up to ₹1,999',
+        '15% for bookings from ₹2,000 to ₹4,999',
+        '20% for bookings of ₹5,000 and above'
+      ]
+    });
+  } catch (err) {
+    console.error('wallet read error:', err.message);
+    return res.status(500).json({ error: 'Could not load wallet.' });
+  }
+});
+
+app.get('/api/admin/bookings', requireAdmin, async (_req, res) => {
+  try {
+    const result = await query(`
+      SELECT b.*, c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone,
+             p.name AS partner_name, p.phone AS partner_phone,
+             partner_profile.status AS partner_status
+      FROM bookings b
+      LEFT JOIN users c ON c.id = b.customer_id
+      LEFT JOIN users p ON p.id = b.partner_id
+      LEFT JOIN partners partner_profile ON partner_profile.user_id = b.partner_id
+      ORDER BY b.created_at DESC
+    `);
+
+    const rows = [];
+    for (const row of result.rows) {
+      const items = await query('SELECT * FROM booking_items WHERE booking_id = $1 ORDER BY id ASC', [row.id]);
+      rows.push({
+        ...row,
+        items: items.rows,
+        customer: { name: row.customer_name, phone: row.customer_phone, email: row.customer_email },
+        partner: row.partner_name ? { name: row.partner_name, phone: row.partner_phone, status: row.partner_status } : null,
+        location: row.customer_latitude && row.customer_longitude ? {
+          lat: Number(row.customer_latitude),
+          lng: Number(row.customer_longitude),
+          updatedAt: row.customer_location_updated_at
+        } : null,
+        total: Number(row.total)
+      });
+    }
+    return res.json(rows);
+  } catch (err) {
+    console.error('admin full bookings error:', err.message);
+    return res.status(500).json({ error: 'Could not load booking details.' });
+  }
+});
+
+const port = Number(PORT || 4000);
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  throw new Error('PORT must be an integer between 1 and 65535.');
+}
+
+(async function startServer() {
+  try {
+    await initDatabase();
+    app.listen(port, '0.0.0.0', () => {
+      console.log(`Hometake backend listening on 0.0.0.0:${port}`);
+    });
+  } catch (err) {
+    console.error('Startup failed:', err.message);
+    process.exit(1);
+  }
+})();
