@@ -1,0 +1,10 @@
+{
+  "name": "hometake-deployment",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Build and deploy the Home-Tech static site to Netlify",
+  "scripts": {
+    "build:netlify": "node scripts/build-netlify.js",
+    "deploy:netlify": "netlify deploy --prod --build"
+  }
+}

@@ -3,6 +3,9 @@ backend/.env
 node_modules
 uploads
 *.log
+dist/
+.netlify/
+backend/node_modules/
 
 # Legacy/local data files
 backend/accounts.json
