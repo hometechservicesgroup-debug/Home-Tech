@@ -3,6 +3,7 @@ services:
     name: hometech-api
     runtime: node
     plan: free
+    region: singapore
     rootDir: backend
     buildCommand: npm ci && npm run migrate
     startCommand: npm start
