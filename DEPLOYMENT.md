@@ -4,7 +4,7 @@ This package keeps the existing Git history, including the `Initial stable versi
 
 ## What this deploys
 
-- Render runs the existing Node/Express API and connects to your existing PostgreSQL database. The Blueprint does **not** create, replace, or delete a database.
+- Render runs the existing Node/Express API and connects to your existing PostgreSQL database. The Blueprint does **not** create, replace, or delete a database. Its build step runs the project's tracked migrations against that database before starting the API; migrations are versioned and do not recreate the database.
 - Netlify serves the customer page at `/`, the admin page at `/admin.html`, and the partner page at `/partner.html`.
 - The browser bundle gets the Render API URL during the Netlify build. Razorpay's public key is served by the backend; the secret remains server-side.
 - Admin booking details include the customer's saved booking location and the assigned partner's latest location when the partner shares it. The customer's booking pin is the address/location selected at booking time; it is not continuous customer GPS tracking.
@@ -84,6 +84,6 @@ Useful live URLs after deployment:
 - Partner: `https://YOUR-SITE.netlify.app/partner.html`
 - API health: `https://YOUR-RENDER-SERVICE.onrender.com/health`
 
-Use a Razorpay test key pair first and make a real test checkout from the customer page. Switch both backend variables to the matching live pair only after verifying the test flow. Payment completion is confirmed by the server after it verifies Razorpay's signature against the authenticated booking and database quote.
+Use a Razorpay test key pair for a local test checkout first. The production API accepts only the matching live key pair, so set the live `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` on Render after the local test succeeds. Payment completion is confirmed by the server after it verifies Razorpay's signature against the authenticated booking and database quote.
 
 Platform references: [Render Blueprint configuration](https://render.com/docs/blueprint-spec), [Render deployment guide](https://render.com/docs/your-first-deploy), [Netlify CLI](https://docs.netlify.com/api-and-cli-guides/cli-guides/get-started-with-cli/), [Netlify environment variables](https://docs.netlify.com/build/environment-variables/get-started/).
