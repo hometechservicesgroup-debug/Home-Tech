@@ -15,11 +15,20 @@ test('development accepts explicitly configured test payment keys', () => {
 
 test('production requires live Razorpay keys', () => {
   assert.equal(isRazorpayConfigured({ ...validTestKeys, NODE_ENV: 'production' }), false);
+  assert.equal(isRazorpayConfigured({ ...validTestKeys, NODE_ENV: 'production', RAZORPAY_ALLOW_TEST_KEYS: 'true' }), true);
   assert.equal(isRazorpayConfigured({
     ...validTestKeys,
     RAZORPAY_KEY_ID: 'rzp_live_A1b2C3',
     NODE_ENV: 'production'
   }), true);
+});
+
+test('payment mode is reported without exposing credentials', () => {
+  const { getRazorpayMode } = require('../payment-config');
+  assert.equal(getRazorpayMode(validTestKeys), 'test');
+  assert.equal(getRazorpayMode({ ...validTestKeys, NODE_ENV: 'production' }), 'off');
+  assert.equal(getRazorpayMode({ ...validTestKeys, NODE_ENV: 'production', RAZORPAY_ALLOW_TEST_KEYS: 'true' }), 'test');
+  assert.equal(getRazorpayMode({ ...validTestKeys, RAZORPAY_KEY_ID: 'rzp_live_A1b2C3' }), 'live');
 });
 
 test('missing and placeholder payment values are disabled', () => {

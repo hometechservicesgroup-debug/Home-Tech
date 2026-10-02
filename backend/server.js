@@ -10,7 +10,7 @@ const path = require('path');
 const multer = require('multer');
 const { Pool } = require('pg');
 const SERVICE_OPTIONS = require('./data/service-options');
-const { isRazorpayConfigured, verifyRazorpaySignature } = require('./payment-config');
+const { isRazorpayConfigured, getRazorpayMode, verifyRazorpaySignature } = require('./payment-config');
 
 const {
   DATABASE_URL,
@@ -38,8 +38,11 @@ if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_VERIFY_SERVICE_SID) {
 }
 
 const paymentsEnabled = isRazorpayConfigured(process.env);
+const paymentMode = getRazorpayMode(process.env);
 if (!paymentsEnabled) {
   console.warn('Razorpay env vars not set — online payment endpoints will return clear errors until configured.');
+} else if (paymentMode === 'test') {
+  console.warn('Razorpay is running in TEST mode — no real customer payments can be collected.');
 }
 
 const pool = new Pool({
@@ -286,6 +289,30 @@ async function checkAndIncrementOtpLimit(identifier) {
   return { allowed: true, remaining: DAILY_LIMIT - Number(result.rows[0].count) };
 }
 
+async function releaseOtpLimit(identifier) {
+  await query(
+    `UPDATE otp_limits SET count = GREATEST(count - 1, 0), updated_at = NOW()
+     WHERE identifier = $1 AND date = CURRENT_DATE AND count > 0`,
+    [identifier.trim().toLowerCase()]
+  );
+}
+
+function otpProviderError(err, phase) {
+  const code = Number(err && err.code);
+  const details = { code: Number.isFinite(code) ? code : undefined, status: err && err.status };
+  console.error(`${phase} Twilio error:`, details);
+  if (code === 60203 || code === 60624) {
+    return { status: 429, message: 'Twilio OTP limit reached. Wait before trying again.' };
+  }
+  if ([60217, 60218, 60219, 60222, 60223, 60228, 60603, 60604].includes(code)) {
+    return { status: 502, message: 'Email OTP setup failed. Check the SendGrid integration, verified sender, and active template on this Twilio Verify service.' };
+  }
+  if (code === 60410 || code === 60412 || code === 60238) {
+    return { status: 400, message: 'Twilio blocked this OTP attempt. Check trial recipient restrictions and Twilio Verify settings.' };
+  }
+  return { status: 502, message: `Twilio could not ${phase === 'send-otp' ? 'send' : 'verify'} the OTP${Number.isFinite(code) ? ` (error ${code})` : ''}. Check Render logs.` };
+}
+
 const DEFAULT_SERVICES = [
   { slug: 'single-door-fridge', name: 'Single Door Fridge', description: 'Single door fridge service', category: 'Home Appliances', base_price: 399 },
   { slug: 'double-door-fridge', name: 'Double Door Fridge', description: 'Double door fridge service', category: 'Home Appliances', base_price: 499 },
@@ -443,17 +470,20 @@ app.get('/partner.html', (_req, res) => res.sendFile(path.join(__dirname, 'partn
 app.get('/health', async (_req, res) => {
   try {
     await query('SELECT 1');
-    return res.json({ ok: true, paymentsEnabled, database: 'connected' });
+    return res.json({ ok: true, paymentsEnabled, paymentMode, database: 'connected' });
   } catch (err) {
     console.error('/health error:', err.message);
-    return res.status(503).json({ ok: false, paymentsEnabled, database: 'disconnected' });
+    return res.status(503).json({ ok: false, paymentsEnabled, paymentMode, database: 'disconnected' });
   }
 });
 
 app.post('/api/send-otp', async (req, res) => {
+  let counted = false;
+  let identifier;
   try {
-    const { identifier, channel } = req.body || {};
-    if (!identifier || !channel) {
+    const { channel } = req.body || {};
+    identifier = req.body && req.body.identifier;
+    if (typeof identifier !== 'string' || !identifier.trim() || identifier.length > 255 || !channel) {
       return res.status(400).json({ error: 'Identifier and channel are required.' });
     }
     if (channel !== 'sms' && channel !== 'email') {
@@ -464,12 +494,17 @@ app.post('/api/send-otp', async (req, res) => {
     if (!limit.allowed) {
       return res.status(429).json({ error: 'Daily OTP limit reached for this number/email. Please try again tomorrow.' });
     }
+    counted = true;
 
+    identifier = identifier.trim();
     await twilioClient.verify.v2.services(TWILIO_VERIFY_SERVICE_SID).verifications.create({ to: identifier, channel });
     return res.json({ success: true, remaining: limit.remaining });
   } catch (err) {
-    console.error('send-otp error:', err.message);
-    return res.status(500).json({ error: 'Could not send OTP. Please check the value and try again.' });
+    if (counted && identifier) {
+      try { await releaseOtpLimit(identifier); } catch (limitErr) { console.error('OTP limit release error:', limitErr.message); }
+    }
+    const providerError = otpProviderError(err, 'send-otp');
+    return res.status(providerError.status).json({ error: providerError.message });
   }
 });
 
@@ -487,8 +522,8 @@ app.post('/api/verify-otp', async (req, res) => {
     }
     return res.status(401).json({ error: 'Incorrect or expired OTP.' });
   } catch (err) {
-    console.error('verify-otp error:', err.message);
-    return res.status(401).json({ error: 'Incorrect or expired OTP.' });
+    const providerError = otpProviderError(err, 'verify-otp');
+    return res.status(providerError.status).json({ error: providerError.message });
   }
 });
 
@@ -1517,6 +1552,7 @@ app.post('/api/create-order', requireSession, async (req, res) => {
     return res.json({
       ...order,
       keyId: RAZORPAY_KEY_ID,
+      paymentMode,
       quote: { subtotal: quote.subtotal, visitCharge: quote.visitCharge, couponDiscount: quote.couponDiscount, total: quote.total }
     });
   } catch (err) {

@@ -42,6 +42,7 @@ In Render, choose **New → Blueprint**, select the GitHub repository you just p
 | `TWILIO_VERIFY_SERVICE_SID` | Twilio Verify Service SID |
 | `RAZORPAY_KEY_ID` | Razorpay Key ID for the chosen test/live mode |
 | `RAZORPAY_KEY_SECRET` | Matching secret; server-side only |
+| `RAZORPAY_ALLOW_TEST_KEYS` | Set to `true` only to temporarily test Razorpay test keys on the Render production service; remove/set `false` for live payment mode |
 | `ALLOWED_ORIGIN` | Exact Netlify origin, e.g. `https://your-site.netlify.app` (no trailing slash) |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | Bootstrap values only if the existing database still needs its first admin |
 
@@ -84,6 +85,8 @@ Useful live URLs after deployment:
 - Partner: `https://YOUR-SITE.netlify.app/partner.html`
 - API health: `https://YOUR-RENDER-SERVICE.onrender.com/health`
 
-Use a Razorpay test key pair for a local test checkout first. The production API accepts only the matching live key pair, so set the live `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` on Render after the local test succeeds. Payment completion is confirmed by the server after it verifies Razorpay's signature against the authenticated booking and database quote.
+For a hosted test checkout, set `RAZORPAY_ALLOW_TEST_KEYS=true` on Render with the matching Razorpay test key pair. `/health` then reports `paymentMode: "test"`; test mode cannot collect real money and the checkout labels it as a test payment. Before collecting real payments, replace both keys with the matching live pair and remove/set `RAZORPAY_ALLOW_TEST_KEYS=false`. Payment completion is confirmed by the server after it verifies Razorpay's signature against the authenticated booking and database quote.
+
+Twilio trial restrictions still apply: SMS recipients must be verified in Twilio, and trial email is restricted to the account sign-up email. Email OTP also requires a SendGrid email integration connected to the same Verify Service, with a verified sender and active template. Check the Render service logs for the Twilio error code when a delivery fails; do not share environment variable values.
 
 Platform references: [Render Blueprint configuration](https://render.com/docs/blueprint-spec), [Render deployment guide](https://render.com/docs/your-first-deploy), [Netlify CLI](https://docs.netlify.com/api-and-cli-guides/cli-guides/get-started-with-cli/), [Netlify environment variables](https://docs.netlify.com/build/environment-variables/get-started/).

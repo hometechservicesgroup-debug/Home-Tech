@@ -2035,7 +2035,7 @@ async function payOnlineThenBook(bookingDetails){
       amount: order.amount,
       currency: 'INR',
       name: 'Home-Tech Services',
-      description: bookingDetails.bookingId,
+      description: order.paymentMode === 'test' ? `TEST PAYMENT — no real charge (${bookingDetails.bookingId})` : bookingDetails.bookingId,
       order_id: order.id,
       prefill: { name: bookingDetails.name, contact: bookingDetails.phone, email: bookingDetails.email || '' },
       theme: { color: '#6d7cff' },
