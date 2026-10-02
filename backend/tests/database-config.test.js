@@ -6,8 +6,8 @@ const path = require('node:path');
 const backendDir = path.join(__dirname, '..');
 
 test('backend declares a PostgreSQL database connection', () => {
-  const envFile = fs.readFileSync(path.join(backendDir, '.env'), 'utf8');
-  assert.match(envFile, /DATABASE_URL=/i, 'DATABASE_URL is missing from the backend environment file');
+  const envExample = fs.readFileSync(path.join(backendDir, '.env.example'), 'utf8');
+  assert.match(envExample, /DATABASE_URL=/i, 'DATABASE_URL is missing from the backend environment template');
 });
 
 test('server enforces role-aware customer and partner auth', () => {
