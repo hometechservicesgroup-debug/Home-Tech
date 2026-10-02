@@ -49,6 +49,8 @@
   .gallery-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:14px; }
   .gallery-item{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:10px; }
   .settings-card{ max-width:420px; }
+  .location-card{ padding:10px 12px; border:1px solid var(--line); border-radius:10px; margin:8px 0; font-size:12px; color:var(--ink2); }
+  .location-card strong{ color:var(--ink); }
 
   /* 3D loading splash */
   #appLoader{ position:fixed; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; background:var(--bg); transition:opacity .5s ease, visibility .5s ease; }
@@ -101,7 +103,7 @@
 
   <p id="err" class="err"></p>
 
-  <div id="pane-bookings" class="pane active"><div id="list"></div></div>
+  <div id="pane-bookings" class="pane active"><p class="meta">Bookings and partner locations refresh every 10 seconds.</p><div id="list"></div></div>
   <div id="pane-customers" class="pane"><div id="customerList"></div></div>
   <div id="pane-partners" class="pane"><div id="partnerList"></div></div>
 
@@ -245,7 +247,7 @@ async function loadAll(){
   const errEl = document.getElementById('err'); errEl.style.display='none';
   try{
     const [bookingsRes, partnersRes] = await Promise.all([
-      fetch(`${session.apiBase}/api/bookings`, { headers: authHeaders() }),
+      fetch(`${session.apiBase}/api/admin/bookings`, { headers: authHeaders() }),
       fetch(`${session.apiBase}/api/partners`, { headers: authHeaders() })
     ]);
     const bookings = await bookingsRes.json();
@@ -255,10 +257,34 @@ async function loadAll(){
     approvedPartners = partners.filter(p => p.status === 'approved');
     renderBookings(bookings);
     renderPartners(partners);
+    startBookingRefresh();
   } catch(e){ errEl.textContent = e.message; errEl.style.display = 'block'; }
 }
 
-function renderBookings(bookings){
+let bookingRefreshTimer = null;
+let bookingRefreshInProgress = false;
+function startBookingRefresh(){
+  if(bookingRefreshTimer) clearInterval(bookingRefreshTimer);
+  bookingRefreshTimer = setInterval(refreshAdminBookings, 10000);
+}
+async function refreshAdminBookings(){
+  if(!session || bookingRefreshInProgress) return;
+  const list = document.getElementById('list');
+  if(list && list.contains(document.activeElement)) return;
+  const expandedOrders = new Set(Array.from(document.querySelectorAll('#list details[data-order-booking][open]')).map(details => details.dataset.orderBooking));
+  bookingRefreshInProgress = true;
+  try{
+    const response = await fetch(`${session.apiBase}/api/admin/bookings`, { headers:authHeaders() });
+    const bookings = await response.json();
+    if(!response.ok) throw new Error(bookings.error || 'Could not refresh bookings.');
+    renderBookings(bookings, expandedOrders);
+  } catch(error){
+    const errEl = document.getElementById('err');
+    if(errEl && !errEl.textContent) { errEl.textContent = error.message; errEl.style.display = 'block'; }
+  } finally { bookingRefreshInProgress = false; }
+}
+
+function renderBookings(bookings, expandedOrders = new Set()){
   const list = document.getElementById('list');
   if(!bookings.length){ list.innerHTML = '<p class="empty">No bookings yet.</p>'; return; }
   list.innerHTML = bookings.map(b => `
@@ -270,6 +296,14 @@ function renderBookings(bookings){
       <div class="meta">${escapeHtml(b.name || '')} · ${escapeHtml(b.phone || '')} · ${escapeHtml(b.email || '')} · ${escapeHtml(b.address || '')}, ${escapeHtml(b.city || '')} ${escapeHtml(b.pin || '')}<br>
         ${escapeHtml(b.date || '')} · ${escapeHtml(b.time || '')} · ₹${Number(b.total)||0} · ${b.paymentStatus === 'paid' ? 'Paid Online' : 'Pay After Service'}
         ${b.assignedPartner ? `<br>Assigned to: ${escapeHtml(b.assignedPartner)}` : '<br><em>Not yet assigned</em>'}<br>${customerWhatsAppLink(b)}</div>
+      <details data-order-booking="${escapeHtml(b.id)}" ${expandedOrders.has(String(b.id)) ? 'open' : ''}><summary>Full order and bill</summary>
+        <div class="meta" style="margin-top:10px;">${(b.items||[]).map(item=>`<div>${escapeHtml(item.name)} · ${escapeHtml(item.opt || item.option || 'Service')} · ${Number(item.qty || item.quantity) || 1} × ₹${Number(item.unitPrice || item.price) || 0} = ₹${Number(item.totalPrice) || 0}</div>`).join('') || 'No service items recorded.'}
+          <div style="margin-top:8px;">Visit fee: ₹${Number(b.visit_charge)||0} · Coupon ${b.coupon ? escapeHtml(b.coupon) : '—'}: −₹${Number(b.coupon_discount)||0}</div>
+          <strong>Total: ₹${Number(b.total)||0}</strong>
+        </div>
+      </details>
+      ${renderLocationCard('Customer location', b.customerLocation)}
+      ${renderLocationCard('Partner live location', b.location)}
       <div class="row">
         <select onchange="updateStatus('${escapeHtml(b.id)}', this.value)">
           ${STATUS_STAGES.map(s => `<option value="${escapeHtml(s)}" ${s === (b.status || 'Requested') ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
@@ -282,6 +316,17 @@ function renderBookings(bookings){
       </div>
     </div>
   `).join('');
+}
+
+function renderLocationCard(label, point){
+  const lat = Number(point && point.lat), lng = Number(point && point.lng);
+  if(!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lng) || lng < -180 || lng > 180){
+    return `<div class="location-card"><strong>${label}:</strong> ${label === 'Partner live location' ? 'Not shared yet. The partner must start location sharing for this booking.' : 'Not shared at booking time.'}</div>`;
+  }
+  const coordinates = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  const updated = point.updatedAt ? new Date(point.updatedAt).toLocaleString() : 'time unavailable';
+  const mapUrl = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`;
+  return `<div class="location-card"><strong>${label}:</strong> ${coordinates} · Updated ${escapeHtml(updated)} · <a href="${mapUrl}" target="_blank" rel="noopener">Open map</a></div>`;
 }
 
 function renderPartners(partners){

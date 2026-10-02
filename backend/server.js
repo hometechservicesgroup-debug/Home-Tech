@@ -10,7 +10,7 @@ const path = require('path');
 const multer = require('multer');
 const { Pool } = require('pg');
 const SERVICE_OPTIONS = require('./data/service-options');
-const { isRazorpayConfigured } = require('./payment-config');
+const { isRazorpayConfigured, verifyRazorpaySignature } = require('./payment-config');
 
 const {
   DATABASE_URL,
@@ -81,17 +81,31 @@ if (paymentsEnabled) {
 
 const uploadDir = path.resolve(UPLOADS_DIR || path.join(__dirname, 'uploads'));
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+app.use('/uploads', (_req, res, next) => { res.setHeader('X-Content-Type-Options', 'nosniff'); next(); });
 app.use('/uploads', express.static(uploadDir));
 
+const uploadExtensions = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'video/mp4': '.mp4', 'video/webm': '.webm' };
+const imageMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const upload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, uploadDir),
     filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname || '').toLowerCase();
+      const ext = uploadExtensions[file.mimetype];
       cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
     }
   }),
-  limits: { fileSize: 50 * 1024 * 1024 }
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = file.fieldname === 'file'
+      ? new Set([...imageMimeTypes, 'video/mp4', 'video/webm'])
+      : imageMimeTypes;
+    if (!allowed.has(file.mimetype)) {
+      const error = new Error('Upload a JPG, PNG, or WebP image; gallery videos may be MP4 or WebM.');
+      error.statusCode = 415;
+      return cb(error);
+    }
+    return cb(null, true);
+  }
 });
 
 async function query(sql, params = []) {
@@ -187,6 +201,9 @@ async function getFullBooking(bookingId) {
   booking.assignedPartner = booking.partner_email || null;
   booking.location = booking.partner_latitude != null && booking.partner_longitude != null
     ? { lat: Number(booking.partner_latitude), lng: Number(booking.partner_longitude), updatedAt: booking.partner_location_updated_at }
+    : null;
+  booking.customerLocation = booking.customer_latitude != null && booking.customer_longitude != null
+    ? { lat: Number(booking.customer_latitude), lng: Number(booking.customer_longitude), updatedAt: booking.customer_location_updated_at }
     : null;
   return booking;
 }
@@ -1471,17 +1488,6 @@ app.get('/api/reviews/:serviceId', async (req, res) => {
   }
 });
 
-function validRazorpaySignature(orderId, paymentId, signature) {
-  const expected = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(`${orderId}|${paymentId}`).digest();
-  let supplied;
-  try {
-    supplied = Buffer.from(String(signature), 'hex');
-  } catch {
-    return false;
-  }
-  return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
-}
-
 app.post('/api/create-order', requireSession, async (req, res) => {
   if (req.user.role !== 'customer') {
     return res.status(403).json({ error: 'Customer account required.' });
@@ -1533,7 +1539,7 @@ app.post('/api/verify-payment', requireSession, async (req, res) => {
       return res.status(400).json({ error: 'Missing payment verification fields.' });
     }
 
-    if (!validRazorpaySignature(razorpay_order_id, razorpay_payment_id, razorpay_signature)) {
+    if (!verifyRazorpaySignature(razorpay_order_id, razorpay_payment_id, razorpay_signature, RAZORPAY_KEY_SECRET)) {
       return res.status(400).json({ error: 'Payment signature mismatch.' });
     }
 
@@ -1603,7 +1609,7 @@ app.post('/api/partner/wallet/verify-payment', requireSession, async (req, res) 
       return res.status(400).json({ error: 'Missing payment verification fields.' });
     }
 
-    if (!validRazorpaySignature(razorpay_order_id, razorpay_payment_id, razorpay_signature)) {
+    if (!verifyRazorpaySignature(razorpay_order_id, razorpay_payment_id, razorpay_signature, RAZORPAY_KEY_SECRET)) {
       return res.status(400).json({ error: 'Payment signature mismatch.' });
     }
 
@@ -1695,29 +1701,16 @@ app.get('/api/partner/wallet', requireSession, async (req, res) => {
 app.get('/api/admin/bookings', requireAdmin, async (_req, res) => {
   try {
     const result = await query(`
-      SELECT b.*, c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone,
-             p.name AS partner_name, p.phone AS partner_phone,
-             partner_profile.status AS partner_status
-      FROM bookings b
-      LEFT JOIN users c ON c.id = b.customer_id
-      LEFT JOIN users p ON p.id = b.partner_id
-      LEFT JOIN partners partner_profile ON partner_profile.user_id = b.partner_id
-      ORDER BY b.created_at DESC
+      SELECT id, total FROM bookings ORDER BY created_at DESC
     `);
 
     const rows = [];
     for (const row of result.rows) {
-      const items = await query('SELECT * FROM booking_items WHERE booking_id = $1 ORDER BY id ASC', [row.id]);
+      const booking = await getFullBooking(row.id);
       rows.push({
-        ...row,
-        items: items.rows,
-        customer: { name: row.customer_name, phone: row.customer_phone, email: row.customer_email },
-        partner: row.partner_name ? { name: row.partner_name, phone: row.partner_phone, status: row.partner_status } : null,
-        location: row.customer_latitude && row.customer_longitude ? {
-          lat: Number(row.customer_latitude),
-          lng: Number(row.customer_longitude),
-          updatedAt: row.customer_location_updated_at
-        } : null,
+        ...booking,
+        customer: { name: booking.customer_name, phone: booking.customer_phone, email: booking.customer_email },
+        partner: booking.partner_name ? { name: booking.partner_name, phone: booking.partner_phone, status: booking.partner_status } : null,
         total: Number(row.total)
       });
     }
@@ -1726,6 +1719,16 @@ app.get('/api/admin/bookings', requireAdmin, async (_req, res) => {
     console.error('admin full bookings error:', err.message);
     return res.status(500).json({ error: 'Could not load booking details.' });
   }
+});
+
+app.use((err, _req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err instanceof multer.MulterError) {
+    const status = err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    return res.status(status).json({ error: status === 413 ? 'Uploads must be 50 MB or smaller.' : 'The upload could not be processed.' });
+  }
+  if (err.statusCode) return res.status(err.statusCode).json({ error: err.message });
+  return next(err);
 });
 
 const port = Number(PORT || 4000);
