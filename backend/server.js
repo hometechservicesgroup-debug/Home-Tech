@@ -30,15 +30,24 @@ if (!DATABASE_URL) {
 }
 
 const firebaseClientConfig = getFirebaseClientConfig(process.env);
-const firebaseAuth = initializeFirebaseAdmin(process.env);
-const firebaseStorageApp = initializeFirebaseAdminApp(process.env);
-const otpEnabled = Boolean(firebaseClientConfig && firebaseAuth);
+let firebaseAuth = null;
 let firebaseStorage = null;
-if (firebaseStorageApp && process.env.FIREBASE_STORAGE_BUCKET) {
-  const { getStorage } = require('firebase-admin/storage');
-  firebaseStorage = createFirebaseStorage(getStorage(firebaseStorageApp).bucket(process.env.FIREBASE_STORAGE_BUCKET.trim()));
+let firebaseConfigStatus = 'missing';
+try {
+  firebaseAuth = initializeFirebaseAdmin(process.env);
+  const firebaseStorageApp = initializeFirebaseAdminApp(process.env);
+  if (firebaseStorageApp && process.env.FIREBASE_STORAGE_BUCKET) {
+    const { getStorage } = require('firebase-admin/storage');
+    firebaseStorage = createFirebaseStorage(getStorage(firebaseStorageApp).bucket(process.env.FIREBASE_STORAGE_BUCKET.trim()));
+  }
+  firebaseConfigStatus = firebaseAuth ? 'ready' : 'missing';
+} catch (err) {
+  firebaseAuth = null;
+  firebaseStorage = null;
+  firebaseConfigStatus = 'invalid';
+  console.error('Firebase configuration error:', err.message);
 }
-
+const otpEnabled = Boolean(firebaseClientConfig && firebaseAuth);
 const phonePeConfig = getPhonePeConfig(process.env);
 const paymentProvider = 'phonepe';
 const paymentsEnabled = isPhonePePaymentsEnabled(phonePeConfig, process.env);
@@ -438,10 +447,10 @@ app.get('/partner.html', (_req, res) => res.sendFile(path.join(__dirname, 'partn
 app.get('/health', async (_req, res) => {
   try {
     await query('SELECT 1');
-    return res.json({ ok: true, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', cloudStorageEnabled: Boolean(firebaseStorage), database: 'connected' });
+    return res.json({ ok: true, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', firebaseConfigStatus, cloudStorageEnabled: Boolean(firebaseStorage), database: 'connected' });
   } catch (err) {
     console.error('/health error:', err.message);
-    return res.status(503).json({ ok: false, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', cloudStorageEnabled: Boolean(firebaseStorage), database: 'disconnected' });
+    return res.status(503).json({ ok: false, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', firebaseConfigStatus, cloudStorageEnabled: Boolean(firebaseStorage), database: 'disconnected' });
   }
 });
 

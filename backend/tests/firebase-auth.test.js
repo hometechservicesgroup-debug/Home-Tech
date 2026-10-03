@@ -49,3 +49,25 @@ test('server accepts only fresh, verified Firebase Google sign-in tokens', async
   await assert.rejects(verifyFirebaseGoogleToken('x'.repeat(120), { verifyIdToken: async () => ({ email: 'customer@example.com', email_verified: true, auth_time: 990, firebase: { sign_in_provider: 'password' } }) }, 1000), /verified Firebase Google/);
   await assert.rejects(verifyFirebaseGoogleToken('x'.repeat(120), { verifyIdToken: async () => ({ email: 'customer@example.com', email_verified: true, auth_time: 1, firebase: { sign_in_provider: 'google.com' } }) }, 1000), /expired/);
 });
+const { parseFirebaseServiceAccount, initializeFirebaseAdminApp } = require('../firebase-auth');
+
+test('service account parser accepts compact JSON and normalizes escaped private key newlines', () => {
+  const value = { ...serviceAccount, private_key: 'line1\\nline2' };
+  const parsed = parseFirebaseServiceAccount({ FIREBASE_PROJECT_ID: 'home-tech', FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify(value) });
+  assert.equal(parsed.projectId, 'home-tech');
+  assert.equal(parsed.serviceAccount.private_key, 'line1\nline2');
+});
+
+test('service account parser accepts Base64 JSON and gives actionable errors for invalid input', () => {
+  const encoded = Buffer.from(JSON.stringify(serviceAccount), 'utf8').toString('base64');
+  assert.deepEqual(parseFirebaseServiceAccount({ FIREBASE_PROJECT_ID: 'home-tech', FIREBASE_SERVICE_ACCOUNT_JSON_BASE64: encoded }).serviceAccount, serviceAccount);
+  assert.throws(() => parseFirebaseServiceAccount({ FIREBASE_PROJECT_ID: 'home-tech', FIREBASE_SERVICE_ACCOUNT_JSON_BASE64: 'not valid!' }), /valid Base64/);
+  assert.throws(() => parseFirebaseServiceAccount({ FIREBASE_PROJECT_ID: 'home-tech', FIREBASE_SERVICE_ACCOUNT_JSON: '{bad json' }), /valid Firebase service account JSON/);
+});
+
+test('storage admin reuses initialized app and does not initialize without a bucket', () => {
+  const app = { name: 'hometake-auth' };
+  const sdk = { apps: [app], initializeApp() { throw new Error('should reuse existing app'); } };
+  assert.equal(initializeFirebaseAdminApp({ FIREBASE_PROJECT_ID: 'home-tech', FIREBASE_STORAGE_BUCKET: 'bucket', FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify(serviceAccount) }, sdk), app);
+  assert.equal(initializeFirebaseAdminApp({ FIREBASE_PROJECT_ID: 'home-tech', FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify(serviceAccount) }, sdk), null);
+});

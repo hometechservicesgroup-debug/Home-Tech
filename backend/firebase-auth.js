@@ -6,29 +6,41 @@ function getFirebaseClientConfig(environment = process.env) {
   return { apiKey: FIREBASE_API_KEY.trim(), authDomain: FIREBASE_AUTH_DOMAIN.trim(), projectId: FIREBASE_PROJECT_ID.trim(), appId: FIREBASE_APP_ID.trim() };
 }
 
-function initializeFirebaseAdmin(environment = process.env, adminSdk = require('firebase-admin')) {
+function parseFirebaseServiceAccount(environment = process.env) {
   const projectId = String(environment.FIREBASE_PROJECT_ID || '').trim();
-  const serviceAccountJson = String(environment.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
-  if (!projectId || !serviceAccountJson) return null;
+  const encoded = String(environment.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 || '').trim();
+  const raw = String(environment.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+  if (!projectId || (!encoded && !raw)) return null;
+  let source = raw;
+  if (encoded) {
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 must be a valid Base64 value.');
+    source = Buffer.from(encoded, 'base64').toString('utf8');
+  }
   let serviceAccount;
-  try { serviceAccount = JSON.parse(serviceAccountJson); } catch { throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON must contain valid service account JSON.'); }
+  try { serviceAccount = JSON.parse(source); if (typeof serviceAccount === 'string') serviceAccount = JSON.parse(serviceAccount); }
+  catch { throw new Error(`${encoded ? 'FIREBASE_SERVICE_ACCOUNT_JSON_BASE64' : 'FIREBASE_SERVICE_ACCOUNT_JSON'} must contain valid Firebase service account JSON${encoded ? ' encoded as Base64' : ''}.`); }
+  if (!serviceAccount || typeof serviceAccount !== 'object' || Array.isArray(serviceAccount)) throw new Error('Firebase service account must be a JSON object.');
   if (serviceAccount.project_id !== projectId || !serviceAccount.client_email || !serviceAccount.private_key) throw new Error('Firebase service account project or credentials do not match FIREBASE_PROJECT_ID.');
+  serviceAccount.private_key = String(serviceAccount.private_key).replace(/\\n/g, '\n');
+  return { projectId, serviceAccount };
+}
+
+function initializeFirebaseAdmin(environment = process.env, adminSdk = require('firebase-admin')) {
+  const credentials = parseFirebaseServiceAccount(environment);
+  if (!credentials) return null;
+  const { projectId, serviceAccount } = credentials;
   const existing = adminSdk.apps.find(app => app.name === 'hometake-auth');
   const app = existing || adminSdk.initializeApp({ credential: adminSdk.credential.cert(serviceAccount), projectId, storageBucket: String(environment.FIREBASE_STORAGE_BUCKET || '').trim() || undefined }, 'hometake-auth');
   return app.auth();
 }
 
 function initializeFirebaseAdminApp(environment = process.env, adminSdk = require('firebase-admin')) {
-  const projectId = String(environment.FIREBASE_PROJECT_ID || '').trim();
-  const serviceAccountJson = String(environment.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+  const credentials = parseFirebaseServiceAccount(environment);
   const bucketName = String(environment.FIREBASE_STORAGE_BUCKET || '').trim();
-  if (!projectId || !serviceAccountJson || !bucketName) return null;
-  let serviceAccount;
-  try { serviceAccount = JSON.parse(serviceAccountJson); } catch { throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON must contain valid service account JSON.'); }
-  if (serviceAccount.project_id !== projectId || !serviceAccount.client_email || !serviceAccount.private_key) throw new Error('Firebase service account project or credentials do not match FIREBASE_PROJECT_ID.');
+  if (!credentials || !bucketName) return null;
+  const { projectId, serviceAccount } = credentials;
   return adminSdk.apps.find(app => app.name === 'hometake-auth') || adminSdk.initializeApp({ credential: adminSdk.credential.cert(serviceAccount), projectId, storageBucket: bucketName }, 'hometake-auth');
 }
-
 async function verifyFirebasePhoneToken(idToken, firebaseAuth, nowSeconds = Math.floor(Date.now() / 1000)) {
   if (typeof idToken !== 'string' || idToken.length < 100 || idToken.length > 10000 || !firebaseAuth) throw new Error('Firebase phone verification is not configured or token is invalid.');
   const decoded = await firebaseAuth.verifyIdToken(idToken, true);
@@ -50,4 +62,4 @@ async function verifyFirebaseGoogleToken(idToken, firebaseAuth, nowSeconds = Mat
   return { email: decoded.email.trim().toLowerCase(), name: String(decoded.name || '').trim().slice(0, 160) };
 }
 
-module.exports = { E164_PHONE, getFirebaseClientConfig, initializeFirebaseAdmin, initializeFirebaseAdminApp, verifyFirebasePhoneToken, verifyFirebaseGoogleToken };
+module.exports = { E164_PHONE, getFirebaseClientConfig, parseFirebaseServiceAccount, initializeFirebaseAdmin, initializeFirebaseAdminApp, verifyFirebasePhoneToken, verifyFirebaseGoogleToken };
