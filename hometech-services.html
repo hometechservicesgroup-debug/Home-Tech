@@ -565,7 +565,11 @@ const SERVICES = [
     opts:['Repair'],
     reviews:[{name:'Geeta M.',text:'Fixed in one visit.',stars:4}] },
 ];
-function optionPrice(base, idx){ return base + idx*90; }
+function optionPrice(service, idx){
+  const option = service && service.opts ? service.opts[idx] : null;
+  const saved = option && service.optionPrices ? Number(service.optionPrices[option]) : NaN;
+  return Number.isFinite(saved) && saved > 0 ? saved : Number(service.price || 0) + idx * 90;
+}
 
 function svc(id){ return SERVICES.find(s=>s.id===id); }
 function avgRating(s){
@@ -593,16 +597,25 @@ function setCart(c){ saveJSON(LS.cart, c); updateCartBadge(); }
 function cartKey(id,opt){ return id+'::'+opt; }
 function cartCount(){ return getCart().reduce((n,i)=>n+i.qty,0); }
 function cartTotal(){ return getCart().reduce((t,i)=> t + i.price*i.qty, 0); }
-const VISIT_CHARGE = 49;
-const FREE_VISIT_THRESHOLD = 499;
-function visitCharge(){ const t = cartTotal(); return (t>0 && t<FREE_VISIT_THRESHOLD) ? VISIT_CHARGE : 0; }
+let pricingConfig = { visitFee:49, visitFeeFreeThreshold:499, partnerWalletMinimum:500, commissionTiers:[], coupons:{} };
+function visitCharge(){ const t = cartTotal(); return (t>0 && t<pricingConfig.visitFeeFreeThreshold) ? pricingConfig.visitFee : 0; }
 
 /* ---- Coupons ---- */
-const COUPONS = {
+let COUPONS = {
   WELCOME50: { type:'flat', value:50, minOrder:399, label:'₹50 off your first booking' },
   SAVE10: { type:'percent', value:10, minOrder:499, maxDiscount:150, label:'10% off (up to ₹150)' },
   REF50: { type:'flat', value:50, minOrder:399, label:'₹50 off — referral reward' }
 };
+function applyPricingConfig(config){
+  pricingConfig = { ...pricingConfig, ...config };
+  if(config && config.coupons){
+    COUPONS = Object.fromEntries(Object.entries(config.coupons).filter(([,coupon])=>coupon.enabled).map(([code,coupon])=>[
+      code, { ...coupon, label: coupon.type==='percent' ? `${coupon.value}% off${coupon.maxDiscount ? ` (up to ₹${coupon.maxDiscount})` : ''}` : `₹${coupon.value} off` }
+    ]));
+    const applied = getAppliedCoupon();
+    if(applied && !COUPONS[applied]) localStorage.removeItem(LS.coupon);
+  }
+}
 function getAppliedCoupon(){ return loadJSON(LS.coupon, null); }
 function couponDiscount(){
   const code = getAppliedCoupon();
@@ -704,7 +717,7 @@ function optionPickerView(s, thenBooking){
   <h3 class="font-display text-[20px] text-white mb-1">${escapeHtml(s.name)}</h3>
   <p class="text-[12.5px] text-[var(--ink-2)] mb-5">Choose exactly what you need — priced individually.</p>
   <div class="space-y-2.5">
-    ${s.opts.map((o,idx)=>{ const price = optionPrice(s.price, idx);
+    ${s.opts.map((o,idx)=>{ const price = optionPrice(s, idx);
       return `<button onclick="confirmAddOption(${inlineArg(s.id)}, ${idx}, ${thenBooking})" class="w-full flex items-center justify-between rounded-xl border border-[var(--line)] px-4 py-3.5 text-left hover:border-[var(--indigo-0)] hover:bg-[rgba(109,124,255,0.08)] transition-colors">
         <span class="text-[13.5px] text-white">${escapeHtml(o)}</span>
         <span class="text-[13.5px] text-white font-medium shrink-0 ml-3">\u20b9${price}</span>
@@ -715,7 +728,7 @@ function optionPickerView(s, thenBooking){
 function confirmAddOption(id, idx, thenBooking){
   const s = svc(id);
   const opt = s.opts[idx];
-  const price = optionPrice(s.price, idx);
+  const price = optionPrice(s, idx);
   const c = getCart();
   const key = cartKey(id,opt);
   const found = c.find(i=>cartKey(i.id,i.opt)===key);
@@ -1140,7 +1153,7 @@ function renderDetailView(){
       <div class="mt-14">
         <h3 class="text-white text-[16px] font-medium mb-4">Available service options</h3>
         <div class="grid sm:grid-cols-2 gap-3">
-          ${s.opts.map((o,idx)=>{ const price = optionPrice(s.price, idx); return `
+          ${s.opts.map((o,idx)=>{ const price = optionPrice(s, idx); return `
           <div class="glass rounded-xl p-4 flex items-center gap-3.5 card-hover">
             <span class="w-8 h-8 rounded-full bg-[var(--indigo-0)]/15 text-[var(--indigo-0)] flex items-center justify-center text-[12px] font-display shrink-0">${idx+1}</span>
             <div class="flex-1 min-w-0"><p class="text-white text-[13.5px] font-medium truncate">${escapeHtml(o)}</p><p class="text-[12px] text-[var(--ink-2)] mt-0.5">₹${price}</p></div>
@@ -1224,7 +1237,7 @@ function renderCartView(){
         <div class="flex items-center justify-between text-[13.5px] text-[var(--ink-1)]"><span>Subtotal</span><span>₹${cartTotal()}</span></div>
         ${couponDiscount()>0 ? `<div class="flex items-center justify-between text-[13.5px] text-emerald-400"><span>Coupon discount</span><span>−₹${couponDiscount()}</span></div>` : ''}
         <div class="flex items-center justify-between text-[13.5px] text-[var(--ink-1)]">
-          <span>Visit charge${visitCharge()===0?' (waived above ₹'+FREE_VISIT_THRESHOLD+')':''}</span>
+          <span>Visit charge${visitCharge()===0?' (waived above ₹'+pricingConfig.visitFeeFreeThreshold+')':''}</span>
           <span>${visitCharge()===0 ? '<span class="text-emerald-400">FREE</span>' : '₹'+visitCharge()}</span>
         </div>
         <div class="h-px bg-[var(--line)] my-1"></div>
@@ -2185,10 +2198,15 @@ const app = document.getElementById('app');
 /* Best-effort: pick up any admin-set price changes without needing a page-code edit */
 async function applyPriceOverrides(){
   try{
+    let pricingChanged = false;
+    try{
+      const pricingRes = await fetch(`${OTP_API_BASE}/api/pricing-config`);
+      if(pricingRes.ok){ applyPricingConfig(await pricingRes.json()); pricingChanged = true; }
+    } catch{}
     const res = await fetch(`${OTP_API_BASE}/api/services`);
     if(!res.ok) return;
     const list = await res.json();
-    let changed = false;
+    let changed = pricingChanged;
     list.forEach(item=>{
       let s = svc(item.id);
       if(!s && item.custom){
@@ -2205,6 +2223,7 @@ async function applyPriceOverrides(){
       if(!s) return;
       if(s.price !== item.price){ s.price = item.price; changed = true; }
       if(Array.isArray(item.options) && JSON.stringify(s.opts)!==JSON.stringify(item.options)){ s.opts = item.options; changed = true; }
+      if(item.optionPrices && JSON.stringify(s.optionPrices||{})!==JSON.stringify(item.optionPrices)){ s.optionPrices = item.optionPrices; changed = true; }
       const resolvedImage = item.image && item.image.startsWith('https://firebasestorage.googleapis.com/') ? item.image : item.image && /^\/uploads\/[A-Za-z0-9._-]+$/.test(item.image) ? `${OTP_API_BASE}${item.image}` : '';
       if(resolvedImage && s.customImage !== resolvedImage){ s.customImage = resolvedImage; changed = true; }
     });
@@ -2219,7 +2238,7 @@ async function applyPriceOverrides(){
       return service && service.opts.includes(item.opt);
     }).map(item=>{
       const service = svc(item.id);
-      const price = optionPrice(service.price, service.opts.indexOf(item.opt));
+      const price = optionPrice(service, service.opts.indexOf(item.opt));
       if(item.price !== price) changed = true;
       return { ...item, price };
     });

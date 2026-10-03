@@ -86,7 +86,7 @@
       <p id="rechargeBalance" style="font-size:24px; font-weight:700; margin:0;">₹0</p>
     </div>
     <label>Recharge Amount</label>
-    <input id="rechargeAmount" type="number" min="500" value="500">
+    <input id="rechargeAmount" type="number" min="1" value="500">
     <p id="rechargeErr" class="err"></p>
     <button class="btn-primary" onclick="startRecharge()">Recharge Now</button>
     <button class="btn-ghost" style="width:100%; margin-top:10px;" onclick="logout()">Logout</button>
@@ -113,7 +113,7 @@
         <div id="commissionNotice2" style="font-size:12px; color:var(--ink2); line-height:1.9;"></div>
       </div>
       <label>Recharge Amount</label>
-      <input id="rechargeAmount2" type="number" min="500" value="500">
+      <input id="rechargeAmount2" type="number" min="1" value="500">
       <p id="rechargeErr2" class="err"></p>
       <button class="btn-primary" onclick="startRecharge(true)">Recharge Now</button>
     </div>
@@ -134,6 +134,8 @@
 const STATUS_STAGES = ['Requested','Confirmed','Technician Assigned','On the Way','In Progress','Completed'];
 let session = null; // { token, apiBase }
 let locationIntervals = {}; // bookingId -> intervalId
+let minRechargeAmount = 500;
+let maxRechargeAmount = 100000;
 const API_BASE_META = document.querySelector('meta[name="api-base"]');
 function defaultApiBase(){
   const configured = window.HOMETakeApiBase || (API_BASE_META && API_BASE_META.content.trim());
@@ -177,8 +179,11 @@ async function afterLogin(user){
   }
   const wallet = await fetchWallet();
   renderCommissionNotice(wallet && wallet.commissionTiers);
+  minRechargeAmount = Number(wallet && wallet.minRecharge) || 500;
+  maxRechargeAmount = Number(wallet && wallet.maxRecharge) || 100000;
+  document.getElementById('minRechargeLabel').textContent = minRechargeAmount;
+  ['rechargeAmount','rechargeAmount2'].forEach(id=>{ const input=document.getElementById(id); if(input){input.min=minRechargeAmount;input.max=maxRechargeAmount;input.value=minRechargeAmount;} });
   if(!wallet || wallet.balance < wallet.minRecharge){
-    document.getElementById('minRechargeLabel').textContent = wallet ? wallet.minRecharge : 500;
     document.getElementById('rechargeBalance').textContent = `₹${wallet ? wallet.balance : 0}`;
     document.getElementById('rechargeView').style.display='flex';
     return;
@@ -231,7 +236,8 @@ async function startRecharge(fromDash){
   const errEl = document.getElementById(fromDash ? 'rechargeErr2' : 'rechargeErr');
   errEl.style.display='none';
   const amount = Number(amountInput.value);
-  if(!amount || amount < 500){ errEl.textContent = 'Minimum recharge is ₹500.'; errEl.style.display='block'; return; }
+  if(!amount || amount < minRechargeAmount){ errEl.textContent = `Minimum recharge is ₹${minRechargeAmount}.`; errEl.style.display='block'; return; }
+  if(amount > maxRechargeAmount){ errEl.textContent = `Maximum single recharge is ₹${maxRechargeAmount}.`; errEl.style.display='block'; return; }
   try{
     const orderRes = await fetch(`${session.apiBase}/api/partner/wallet/create-order`, {
       method:'POST', headers:{'Content-Type':'application/json','x-session-token':session.token}, body: JSON.stringify({amount})

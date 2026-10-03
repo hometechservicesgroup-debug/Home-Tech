@@ -108,7 +108,30 @@
   <div id="pane-partners" class="pane"><div id="partnerList"></div></div>
 
   <div id="pane-prices" class="pane">
-    <p class="sub">Change what customers pay for each service, and replace the built-in icon with your own photo. Updates apply immediately on the website.</p>
+    <p class="sub">Change the price of every service option (for example Gas Refill), customer visit fees, coupons, and partner wallet/commission rules. New quotes use saved settings; existing bookings keep their original total.</p>
+
+    <div class="row-item" id="pricingSettingsCard">
+      <h3 style="margin-bottom:8px;">Customer fees and partner charges</h3>
+      <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;">
+        <div><label>Visit fee (₹)</label><input id="cfgVisitFee" type="number" min="0" step="1"></div>
+        <div><label>Waive visit fee at subtotal (₹)</label><input id="cfgVisitThreshold" type="number" min="0" step="1"></div>
+        <div><label>Partner wallet minimum (₹)</label><input id="cfgWalletMinimum" type="number" min="1" step="1"></div>
+        <div><label>Max partner recharge (₹)</label><input id="cfgWalletMaximum" type="number" min="1" step="1"></div>
+      </div>
+      <h3 style="margin:16px 0 8px;">Partner commission tiers</h3>
+      <p class="meta">Set the upper booking total and commission percent for tiers 1 and 2. Tier 3 covers all higher totals.</p>
+      <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px;">
+        <div><label>Tier 1 up to (₹)</label><input id="cfgTier1Limit" type="number" min="1"></div>
+        <div><label>Tier 1 commission (%)</label><input id="cfgTier1Rate" type="number" min="0" max="100" step="0.1"></div>
+        <div><label>Tier 2 up to (₹)</label><input id="cfgTier2Limit" type="number" min="1"></div>
+        <div><label>Tier 2 commission (%)</label><input id="cfgTier2Rate" type="number" min="0" max="100" step="0.1"></div>
+        <div><label>Tier 3 commission (%)</label><input id="cfgTier3Rate" type="number" min="0" max="100" step="0.1"></div>
+      </div>
+      <h3 style="margin:16px 0 8px;">Coupon rules</h3>
+      <div id="couponSettings"></div>
+      <p id="pricingConfigErr" class="err"></p><p id="pricingConfigOk" class="ok"></p>
+      <button class="btn-primary" onclick="savePricingConfig()">Save Fees, Coupons &amp; Commission</button>
+    </div>
 
     <div class="row-item">
       <h3 style="margin-bottom:12px;">Add New Product</h3>
@@ -403,19 +426,25 @@ async function loadPrices(){
   const list = document.getElementById('priceList');
   list.innerHTML = '<p class="empty">Loading…</p>';
   try{
-    const res = await fetch(`${session.apiBase}/api/services`);
+    const [res, configRes] = await Promise.all([
+      fetch(`${session.apiBase}/api/services`),
+      fetch(`${session.apiBase}/api/admin/pricing-config`, {headers:authHeaders()})
+    ]);
     const services = await res.json();
     if(!res.ok) throw new Error(services.error || 'Could not load services.');
+    const config = await configRes.json();
+    if(!configRes.ok) throw new Error(config.error || 'Could not load pricing settings.');
+    renderPricingConfig(config);
+    priceOptionsByService = Object.fromEntries(services.map(s=>[s.id, Array.isArray(s.options)?s.options:[]]));
     list.innerHTML = services.map(s => `
       <div class="price-row" style="flex-wrap:wrap;">
         <div class="row" style="flex:1; min-width:200px;">
           ${s.image ? `<img src="${escapeHtml(s.image.startsWith('https://firebasestorage.googleapis.com/') ? s.image : session.apiBase+s.image)}" style="width:40px;height:36px;object-fit:cover;border-radius:8px;">` : ''}
-          <span>${escapeHtml(s.name)}${s.custom ? ' <span style="font-size:10px; color:var(--indigo);">(custom)</span>' : ''}</span>
+          <span>${escapeHtml(s.name)}${s.custom ? ' <span style="font-size:10px; color:var(--indigo);">(custom)</span>' : ''}<small style="display:block;color:var(--ink2);">Set each customer option price</small></span>
         </div>
-        <div class="row">
-          <span>₹</span>
-          <input id="price-${s.id}" type="number" min="1" value="${s.price}">
-          <button class="action btn-approve" onclick="savePrice('${s.id}')">Save Price</button>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;width:100%;">
+          ${(s.options||[]).map((option,index)=>`<label style="font-size:11px;">${escapeHtml(option)} (₹)<input id="optionprice-${s.id}-${index}" type="number" min="0.01" step="0.01" value="${Number((s.optionPrices||{})[option] ?? (Number(s.price)+(index*90)))||0}" style="width:100%;margin:4px 0 0;"></label>`).join('')}
+          <button class="action btn-approve" onclick="saveServicePrices('${s.id}')">Save Option Prices</button>
         </div>
         <div class="row">
           <input id="img-${s.id}" type="file" accept="image/*" style="width:auto; margin:0; padding:6px;">
@@ -456,6 +485,59 @@ async function savePrice(id){
     const data = await res.json();
     if(!res.ok) throw new Error(data.error);
   } catch(e){ alert('Error: ' + e.message); }
+}
+
+let priceOptionsByService = {};
+function renderPricingConfig(config){
+  document.getElementById('cfgVisitFee').value=config.visitFee;
+  document.getElementById('cfgVisitThreshold').value=config.visitFeeFreeThreshold;
+  document.getElementById('cfgWalletMinimum').value=config.partnerWalletMinimum;
+  document.getElementById('cfgWalletMaximum').value=config.partnerWalletMaximumRecharge;
+  document.getElementById('cfgTier1Limit').value=config.commissionTiers[0]?.upTo ?? '';
+  document.getElementById('cfgTier1Rate').value=config.commissionTiers[0]?.ratePercent ?? '';
+  document.getElementById('cfgTier2Limit').value=config.commissionTiers[1]?.upTo ?? '';
+  document.getElementById('cfgTier2Rate').value=config.commissionTiers[1]?.ratePercent ?? '';
+  document.getElementById('cfgTier3Rate').value=config.commissionTiers[2]?.ratePercent ?? '';
+  document.getElementById('couponSettings').innerHTML=Object.entries(config.coupons||{}).map(([code,c])=>`
+    <div class="price-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;align-items:end;">
+      <strong>${escapeHtml(code)}</strong><label>Enabled<select id="coupon-${code}-enabled"><option value="true" ${c.enabled?'selected':''}>Yes</option><option value="false" ${!c.enabled?'selected':''}>No</option></select></label>
+      <label>Discount type<select id="coupon-${code}-type"><option value="flat" ${c.type==='flat'?'selected':''}>Fixed ₹</option><option value="percent" ${c.type==='percent'?'selected':''}>Percent %</option></select></label>
+      <label>Discount value<input id="coupon-${code}-value" type="number" min="0" step="0.1" value="${c.value}"></label>
+      <label>Minimum order (₹)<input id="coupon-${code}-min" type="number" min="0" value="${c.minOrder}"></label>
+      <label>Maximum discount (₹; 0 = no cap)<input id="coupon-${code}-max" type="number" min="0" value="${c.maxDiscount||0}"></label>
+    </div>`).join('');
+}
+async function savePricingConfig(){
+  const err=document.getElementById('pricingConfigErr'), ok=document.getElementById('pricingConfigOk');err.style.display='none';ok.style.display='none';
+  const number=id=>Number(document.getElementById(id).value);
+  const coupons={};
+  for(const code of ['WELCOME50','SAVE10','REF50']) coupons[code]={
+    enabled:document.getElementById(`coupon-${code}-enabled`).value==='true',
+    type:document.getElementById(`coupon-${code}-type`).value,
+    value:number(`coupon-${code}-value`), minOrder:number(`coupon-${code}-min`), maxDiscount:number(`coupon-${code}-max`)
+  };
+  const body={
+    visitFee:number('cfgVisitFee'), visitFeeFreeThreshold:number('cfgVisitThreshold'), partnerWalletMinimum:number('cfgWalletMinimum'), partnerWalletMaximumRecharge:number('cfgWalletMaximum'), coupons,
+    commissionTiers:[
+      {upTo:number('cfgTier1Limit'),ratePercent:number('cfgTier1Rate')},
+      {upTo:number('cfgTier2Limit'),ratePercent:number('cfgTier2Rate')},
+      {upTo:null,ratePercent:number('cfgTier3Rate')}
+    ]
+  };
+  try{
+    const res=await fetch(`${session.apiBase}/api/admin/pricing-config`,{method:'PUT',headers:authHeaders(true),body:JSON.stringify(body)});
+    const data=await res.json();if(!res.ok)throw new Error(data.error||'Could not save pricing settings.');
+    renderPricingConfig(data.config);ok.textContent='Pricing settings saved. New quotes will use these amounts.';ok.style.display='block';
+  }catch(e){err.textContent=e.message;err.style.display='block';}
+}
+async function saveServicePrices(id){
+  const options=priceOptionsByService[id]||[];const optionPrices={};
+  for(let i=0;i<options.length;i++) optionPrices[options[i]]=Number(document.getElementById(`optionprice-${id}-${i}`).value);
+  try{
+    const res=await fetch(`${session.apiBase}/api/admin/services/${id}/price`,{method:'PATCH',headers:authHeaders(true),body:JSON.stringify({optionPrices})});
+    const data=await res.json();if(!res.ok)throw new Error(data.error||'Could not save option prices.');
+    await loadPrices();
+  }catch(e){alert('Error: '+e.message);}
 }
 
 /* ---- Gallery ---- */

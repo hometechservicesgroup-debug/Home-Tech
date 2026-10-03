@@ -12,6 +12,7 @@ const SERVICE_OPTIONS = require('./data/service-options');
 const { getFirebaseClientConfig, initializeFirebaseAdmin, initializeFirebaseAdminApp, verifyFirebasePhoneToken, verifyFirebaseGoogleToken } = require('./firebase-auth');
 const { createFirebaseStorage } = require('./firebase-storage');
 const { getPhonePeConfig, isPhonePePaymentsEnabled, createPhonePePayment, getPhonePeOrderStatus, newPhonePeOrderId } = require('./phonepe');
+const { DEFAULT_PRICING_CONFIG, validatePricingConfig, calculateCommission } = require('./pricing-config');
 
 const {
   DATABASE_URL,
@@ -342,20 +343,25 @@ async function ensureAdminBootstrap() {
 async function initDatabase() {
   await query('SELECT 1');
   await seedServices();
+  await query(
+    `INSERT INTO site_settings (key, value, created_at, updated_at)
+     VALUES ('pricingConfig', $1, NOW(), NOW()) ON CONFLICT (key) DO NOTHING`,
+    [JSON.stringify(DEFAULT_PRICING_CONFIG)]
+  );
   await ensureAdminBootstrap();
 }
 
 const STATUS_STAGES = ['Requested', 'Confirmed', 'Technician Assigned', 'On the Way', 'In Progress', 'Completed'];
-const COMMISSION_TIERS = [
-  { upTo: 1999, rate: 0.10 },
-  { upTo: 4999, rate: 0.15 },
-  { upTo: Number.MAX_SAFE_INTEGER, rate: 0.20 }
-];
 
-function calculateCommission(total) {
-  const amount = safeNumber(total, 0);
-  const tier = COMMISSION_TIERS.find((item) => amount <= item.upTo) || COMMISSION_TIERS[COMMISSION_TIERS.length - 1];
-  return Math.round(amount * tier.rate);
+async function getPricingConfig() {
+  const result = await query("SELECT value FROM site_settings WHERE key = 'pricingConfig'");
+  if (!result.rows[0]) return JSON.parse(JSON.stringify(DEFAULT_PRICING_CONFIG));
+  try {
+    const saved = JSON.parse(result.rows[0].value);
+    return { ...JSON.parse(JSON.stringify(DEFAULT_PRICING_CONFIG)), ...saved };
+  } catch {
+    return JSON.parse(JSON.stringify(DEFAULT_PRICING_CONFIG));
+  }
 }
 
 async function calculateBookingQuote(serviceEntries, couponValue) {
@@ -365,6 +371,7 @@ async function calculateBookingQuote(serviceEntries, couponValue) {
     throw error;
   }
 
+  const config = await getPricingConfig();
   const normalizedItems = [];
   let subtotal = 0;
   for (const item of serviceEntries) {
@@ -388,7 +395,8 @@ async function calculateBookingQuote(serviceEntries, couponValue) {
 
       const options = Array.isArray(service.options) ? service.options : [];
       const optionIndex = options.indexOf(String(option || ''));
-      const expectedUnitPrice = Number(service.base_price) + optionIndex * 90;
+      const optionPrices = service.option_prices && typeof service.option_prices === 'object' ? service.option_prices : {};
+      const expectedUnitPrice = safeNumber(optionPrices[String(option || '')], Number(service.base_price) + optionIndex * 90);
       if (optionIndex < 0 || Math.abs(unitPrice - expectedUnitPrice) > 0.001) {
       const error = new Error(`Invalid price for ${service.name}. Refresh the service list and try again.`);
       error.statusCode = 400;
@@ -401,16 +409,11 @@ async function calculateBookingQuote(serviceEntries, couponValue) {
   }
 
   subtotal = Math.round(subtotal * 100) / 100;
-  const visitCharge = subtotal > 0 && subtotal < 499 ? 49 : 0;
+  const visitCharge = subtotal > 0 && subtotal < config.visitFeeFreeThreshold ? config.visitFee : 0;
   const couponCode = String(couponValue || '').trim().toUpperCase();
-  const coupons = {
-    WELCOME50: { type: 'flat', value: 50, minOrder: 399 },
-    SAVE10: { type: 'percent', value: 10, minOrder: 499, maxDiscount: 150 },
-    REF50: { type: 'flat', value: 50, minOrder: 399 }
-  };
-  const coupon = coupons[couponCode];
+  const coupon = config.coupons[couponCode];
   let couponDiscount = 0;
-  if (coupon && subtotal >= coupon.minOrder) {
+  if (coupon && coupon.enabled && subtotal >= coupon.minOrder) {
     couponDiscount = coupon.type === 'flat' ? coupon.value : Math.round(subtotal * coupon.value / 100);
     if (coupon.maxDiscount) couponDiscount = Math.min(couponDiscount, coupon.maxDiscount);
     couponDiscount = Math.min(couponDiscount, subtotal);
@@ -420,7 +423,7 @@ async function calculateBookingQuote(serviceEntries, couponValue) {
     items: normalizedItems,
     subtotal,
     visitCharge,
-    coupon: coupon ? couponCode : null,
+    coupon: coupon && coupon.enabled && subtotal >= coupon.minOrder ? couponCode : null,
     couponDiscount,
     total: Math.max(0, Math.round((subtotal + visitCharge - couponDiscount) * 100) / 100)
   };
@@ -715,6 +718,7 @@ app.get('/api/services', async (_req, res) => {
       description: service.description,
       category: service.category,
       options: Array.isArray(service.options) ? service.options : [],
+      optionPrices: service.option_prices && typeof service.option_prices === 'object' ? service.option_prices : {},
       price: Number(service.base_price),
       image: service.image_url,
       custom: service.is_custom,
@@ -724,6 +728,41 @@ app.get('/api/services', async (_req, res) => {
   } catch (err) {
     console.error('services error:', err.message);
     return res.status(500).json({ error: 'Could not load services.' });
+  }
+});
+
+app.get('/api/pricing-config', async (_req, res) => {
+  try {
+    const config = await getPricingConfig();
+    return res.json({ visitFee: config.visitFee, visitFeeFreeThreshold: config.visitFeeFreeThreshold, partnerWalletMinimum: config.partnerWalletMinimum, partnerWalletMaximumRecharge: config.partnerWalletMaximumRecharge, commissionTiers: config.commissionTiers, coupons: config.coupons });
+  } catch (err) {
+    console.error('pricing config read error:', err.message);
+    return res.status(500).json({ error: 'Could not load pricing settings.' });
+  }
+});
+
+app.get('/api/admin/pricing-config', requireAdmin, async (_req, res) => {
+  try { return res.json(await getPricingConfig()); }
+  catch (err) {
+    console.error('admin pricing config read error:', err.message);
+    return res.status(500).json({ error: 'Could not load pricing settings.' });
+  }
+});
+
+app.put('/api/admin/pricing-config', requireAdmin, async (req, res) => {
+  try {
+    const config = validatePricingConfig(req.body);
+    await query(
+      `INSERT INTO site_settings (key, value, created_at, updated_at)
+       VALUES ('pricingConfig', $1, NOW(), NOW())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [JSON.stringify(config)]
+    );
+    return res.json({ success: true, config });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ error: err.message });
+    console.error('admin pricing config save error:', err.message);
+    return res.status(500).json({ error: 'Could not save pricing settings.' });
   }
 });
 
@@ -742,19 +781,20 @@ app.post('/api/admin/services', requireAdmin, upload.single('image'), async (req
 
     const slug = String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || `service-${Date.now()}`;
     const result = await query(
-      `INSERT INTO services (slug, name, description, category, base_price, options, image_url, active, is_custom, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, true, true, NOW(), NOW())
+      `INSERT INTO services (slug, name, description, category, base_price, options, option_prices, image_url, active, is_custom, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, true, true, NOW(), NOW())
        ON CONFLICT (slug) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
          category = EXCLUDED.category,
          base_price = EXCLUDED.base_price,
          options = EXCLUDED.options,
+         option_prices = EXCLUDED.option_prices,
          image_url = EXCLUDED.image_url,
          is_custom = true,
          updated_at = NOW()
        RETURNING *`,
-      [slug, name, description || '', category || 'General', numericValue, JSON.stringify(['General Service']), storedImage ? storedImage.url : null]
+      [slug, name, description || '', category || 'General', numericValue, JSON.stringify(['General Service']), JSON.stringify({ 'General Service': numericValue }), storedImage ? storedImage.url : null]
     );
 
     return res.json({ success: true, item: { id: result.rows[0].slug || String(result.rows[0].id), ...result.rows[0] } });
@@ -766,17 +806,26 @@ app.post('/api/admin/services', requireAdmin, upload.single('image'), async (req
 
 app.patch('/api/admin/services/:id/price', requireAdmin, async (req, res) => {
   try {
-    const numericValue = safeNumber(req.body && req.body.price, 0);
-    if (numericValue <= 0) {
-      return res.status(400).json({ error: 'Price must be a positive number.' });
-    }
-
     const serviceId = req.params.id;
-    const result = await query('UPDATE services SET base_price = $1, updated_at = NOW() WHERE id::text = $2 OR slug = $2 RETURNING *', [numericValue, serviceId]);
-    if (!result.rows[0]) {
-      return res.status(404).json({ error: 'Service not found.' });
+    const currentResult = await query('SELECT slug, base_price, options, option_prices FROM services WHERE id::text = $1 OR slug = $1', [serviceId]);
+    const current = currentResult.rows[0];
+    if (!current) return res.status(404).json({ error: 'Service not found.' });
+    const options = Array.isArray(current.options) ? current.options : [];
+    const optionPrices = { ...(current.option_prices || {}) };
+    let numericValue = safeNumber(req.body && req.body.price, Number(current.base_price));
+    if (req.body && req.body.optionPrices && typeof req.body.optionPrices === 'object') {
+      for (const option of options) {
+        const price = Number(req.body.optionPrices[option]);
+        if (!Number.isFinite(price) || price <= 0 || price > 1000000) return res.status(400).json({ error: `Enter a valid price for ${option}.` });
+        optionPrices[option] = Math.round(price * 100) / 100;
+      }
+      numericValue = Number(optionPrices[options[0]] ?? req.body.price);
+    } else {
+      if (!Number.isFinite(numericValue) || numericValue <= 0 || numericValue > 1000000) return res.status(400).json({ error: 'Price must be between ₹0.01 and ₹1,000,000.' });
+      if (options.length) optionPrices[options[0]] = numericValue;
     }
-    return res.json({ success: true, price: Number(result.rows[0].base_price) });
+    const result = await query('UPDATE services SET base_price = $1, option_prices = $2::jsonb, updated_at = NOW() WHERE id::text = $3 OR slug = $3 RETURNING *', [numericValue, JSON.stringify(optionPrices), serviceId]);
+    return res.json({ success: true, price: Number(result.rows[0].base_price), optionPrices: result.rows[0].option_prices });
   } catch (err) {
     console.error('service price update error:', err.message);
     return res.status(500).json({ error: 'Could not update price.' });
@@ -1340,16 +1389,17 @@ app.patch('/api/bookings/:id/assign', requireAdmin, async (req, res) => {
         return res.status(409).json({ error: 'This booking is already assigned. Unassign it before changing partners.' });
       }
 
-      const amount = calculateCommission(booking.total || 0);
+      const pricingConfig = await getPricingConfig();
+      const amount = calculateCommission(booking.total || 0, pricingConfig);
       const debit = await client.query(
         `UPDATE partners SET wallet_balance = wallet_balance - $1, updated_at = NOW()
-         WHERE user_id = $2 AND status = 'approved' AND wallet_balance >= $1
+         WHERE user_id = $2 AND status = 'approved' AND wallet_balance >= GREATEST($1, $3)
          RETURNING id`,
-        [amount, partner.user_id]
+        [amount, partner.user_id, pricingConfig.partnerWalletMinimum]
       );
       if (!debit.rows[0]) {
         await client.query('ROLLBACK');
-        return res.status(400).json({ error: `Partner wallet is too low to accept this booking. Required: ₹${amount}.` });
+        return res.status(400).json({ error: `Partner needs at least ₹${pricingConfig.partnerWalletMinimum} in the wallet and enough balance for the ₹${amount} commission.` });
       }
 
       await client.query(
@@ -1598,11 +1648,12 @@ app.post('/api/partner/wallet/create-order', requireSession, async (req, res) =>
     }
 
     const amount = safeNumber(req.body && req.body.amount, 0);
-    if (amount < 500) {
-      return res.status(400).json({ error: 'Minimum recharge is ₹500.' });
+    const pricingConfig = await getPricingConfig();
+    if (amount < pricingConfig.partnerWalletMinimum) {
+      return res.status(400).json({ error: `Minimum recharge is ₹${pricingConfig.partnerWalletMinimum}.` });
     }
 
-    if (amount > 100000) return res.status(400).json({ error: 'Maximum single recharge is ₹100,000.' });
+    if (amount > pricingConfig.partnerWalletMaximumRecharge) return res.status(400).json({ error: `Maximum single recharge is ₹${pricingConfig.partnerWalletMaximumRecharge}.` });
     const publicSiteUrl = String(process.env.PUBLIC_SITE_URL || allowedOrigins[0] || '').replace(/\/$/, '');
     if (!publicSiteUrl || (phonePeConfig.mode === 'production' && !publicSiteUrl.startsWith('https://'))) {
       return res.status(503).json({ error: 'Set the HTTPS PUBLIC_SITE_URL before using PhonePe checkout.' });
@@ -1714,16 +1765,20 @@ app.get('/api/partner/wallet', requireSession, async (req, res) => {
       return res.status(404).json({ error: 'Partner record not found.' });
     }
 
-    const txns = await query('SELECT * FROM partner_wallet_transactions WHERE partner_id = $1 ORDER BY created_at DESC', [partner.id]);
+    const [txns, pricingConfig] = await Promise.all([
+      query('SELECT * FROM partner_wallet_transactions WHERE partner_id = $1 ORDER BY created_at DESC', [partner.id]),
+      getPricingConfig()
+    ]);
     return res.json({
       balance: Number(partner.wallet_balance),
       transactions: txns.rows.map((transaction) => ({ ...transaction, date: transaction.created_at })),
-      minRecharge: 500,
-      commissionTiers: [
-        '10% for bookings up to ₹1,999',
-        '15% for bookings from ₹2,000 to ₹4,999',
-        '20% for bookings of ₹5,000 and above'
-      ]
+      minRecharge: pricingConfig.partnerWalletMinimum,
+      maxRecharge: pricingConfig.partnerWalletMaximumRecharge,
+      commissionTiers: pricingConfig.commissionTiers.map((tier, index) => {
+        const lower = index === 0 ? 1 : pricingConfig.commissionTiers[index - 1].upTo + 1;
+        const upper = tier.upTo === null ? 'and above' : `to ₹${tier.upTo}`;
+        return `₹${lower} ${upper} → ${tier.ratePercent}% company commission`;
+      })
     });
   } catch (err) {
     console.error('wallet read error:', err.message);
