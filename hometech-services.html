@@ -324,8 +324,9 @@ nav.liquid-bar::before{content:"";position:absolute;top:1px;left:1px;right:1px;h
       <button onclick="go('partner')" class="block hover:text-white">Join as Partner</button>
       <button onclick="go('login')" class="block hover:text-white">Login</button>
       <button onclick="go('signup')" class="block hover:text-white">Sign Up</button>
-      <button onclick="alert('Privacy Policy — demo site, for illustration only.')" class="block hover:text-white">Privacy Policy</button>
-      <button onclick="alert('Terms & Conditions — demo site, for illustration only.')" class="block hover:text-white">Terms & Conditions</button>
+      <a href="/privacy-policy.html" class="block hover:text-white">Privacy Policy</a>
+      <a href="/terms-and-conditions.html" class="block hover:text-white">Terms &amp; Conditions</a>
+      <a href="/partner-terms.html" class="block hover:text-white">Partner Terms</a>
     </div>
     <div class="text-[13px] text-[var(--ink-2)] space-y-2.5">
       <p class="text-[var(--ink-1)] mb-2">Contact</p>
@@ -1550,6 +1551,7 @@ function signupSetupStep(){
       <input id="suEmail" type="email" placeholder="Email" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-3">
       <input id="suPass" type="password" placeholder="Create Password (min 6 characters)" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-3">
       <input id="suPass2" type="password" placeholder="Confirm Password" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">
+      <label class="flex items-start gap-2.5 text-[12px] leading-relaxed text-[var(--ink-2)] mt-2"><input id="signupTermsAccepted" type="checkbox" class="mt-1 accent-indigo-500"><span>I agree to the <a href="/terms-and-conditions.html" target="_blank" rel="noopener" class="text-[var(--indigo-0)] underline">Terms &amp; Conditions</a> and acknowledge the <a href="/privacy-policy.html" target="_blank" rel="noopener" class="text-[var(--indigo-0)] underline">Privacy Policy</a>.</span></label>
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
       <button onclick="finishSignup()" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mt-3">Create Account</button>
     </div>
@@ -1665,6 +1667,7 @@ async function finishSignup(){
   const email = document.getElementById('suEmail').value.trim();
   const pass = document.getElementById('suPass').value;
   const pass2 = document.getElementById('suPass2').value;
+  if(!document.getElementById('signupTermsAccepted')?.checked){ authErr('Please accept the Terms & Conditions and Privacy Policy to create an account.'); return; }
   if(!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ authErr('Please enter your name and a valid email.'); return; }
   if(pass.length<6){ authErr('Password must be at least 6 characters.'); return; }
   if(pass!==pass2){ authErr('Passwords do not match.'); return; }
@@ -1858,14 +1861,15 @@ function renderPartnerView(){
           <option>AC</option><option>Fridge</option><option>Cooler</option><option>RO</option><option>Geyser</option><option>Washing Machine</option><option>Electrical</option><option>Other</option>
         </select>
         <input id="pExp" type="number" min="0" placeholder="Years of Experience" class="rounded-xl px-4 py-3 text-[14px]">
-        <input id="pAadhar" inputmode="numeric" maxlength="12" placeholder="Aadhar Number (12 digits)" class="rounded-xl px-4 py-3 text-[14px] sm:col-span-2">
+        <input id="pAadhar" inputmode="numeric" maxlength="4" placeholder="Last 4 Aadhaar digits (optional)" class="rounded-xl px-4 py-3 text-[14px] sm:col-span-2">
         <textarea id="pAddress" placeholder="Address" rows="2" class="rounded-xl px-4 py-3 text-[14px] sm:col-span-2"></textarea>
         <div class="sm:col-span-2">
           <label class="text-[12px] text-[var(--ink-2)] block mb-1.5">Your Photo</label>
           <input id="pPhoto" type="file" accept="image/*" class="rounded-xl px-4 py-3 text-[13px] w-full glass">
         </div>
       </div>
-      <p class="text-[11.5px] text-[var(--ink-2)] mb-4">Your Aadhar and photo are used only for identity verification and are never shown publicly.</p>
+      <p class="text-[11.5px] text-[var(--ink-2)] mb-4">Enter only the last four Aadhaar digits, if needed. Do not upload or enter your full Aadhaar number. Your details and photo are used for application review and are not shown publicly.</p>
+      <label class="flex items-start gap-2.5 text-[12px] leading-relaxed text-[var(--ink-2)] mb-4"><input id="partnerTermsAccepted" type="checkbox" class="mt-1 accent-indigo-500"><span>I have read and agree to the <a href="/partner-terms.html" target="_blank" rel="noopener" class="text-[var(--indigo-0)] underline">Partner Terms</a> and acknowledge the <a href="/privacy-policy.html" target="_blank" rel="noopener" class="text-[var(--indigo-0)] underline">Privacy Policy</a>.</span></label>
       <p id="pError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
       <button onclick="submitPartner()" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mt-2">Submit for Approval</button>
       <p class="text-[11.5px] text-[var(--ink-2)] text-center mt-3">Once approved by admin, log in here anytime and open the Partner Dashboard to see assigned jobs.</p>
@@ -1882,7 +1886,8 @@ async function submitPartner(){
   const photoInput = document.getElementById('pPhoto');
   const err = document.getElementById('pError');
   if(!city || !expertise){ err.textContent = 'Please fill your city and service expertise.'; err.classList.remove('hidden'); return; }
-  if(aadharNumber && aadharNumber.length!==12){ err.textContent = 'Aadhar number must be exactly 12 digits.'; err.classList.remove('hidden'); return; }
+  if(aadharNumber && aadharNumber.length!==4){ err.textContent = 'Enter only the last four Aadhaar digits, or leave this optional field blank.'; err.classList.remove('hidden'); return; }
+  if(!document.getElementById('partnerTermsAccepted')?.checked){ err.textContent = 'Please accept the Partner Terms and Privacy Policy before applying.'; err.classList.remove('hidden'); return; }
   err.classList.add('hidden');
   const form = new FormData();
   form.append('city', city); form.append('area', area); form.append('expertise', expertise);

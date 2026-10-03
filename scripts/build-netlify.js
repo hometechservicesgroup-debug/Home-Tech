@@ -34,4 +34,7 @@ function copyHtml(source, target) {
 copyHtml('hometech-services.html', 'index.html');
 copyHtml('backend/admin.html', 'admin.html');
 copyHtml('backend/partner.html', 'partner.html');
+for (const page of ['privacy-policy.html', 'terms-and-conditions.html', 'partner-terms.html']) {
+  fs.copyFileSync(path.join(root, page), path.join(out, page));
+}
 console.log(`Netlify site built in dist for backend ${parsed.origin}`);
