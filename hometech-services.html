@@ -855,7 +855,6 @@ function go(view, anchor){
   document.getElementById('mobileMenu').classList.add('hidden');
   if(view==='services') filterServices();
   if(anchor){ setTimeout(()=>{ const el=document.getElementById(anchor); if(el) el.scrollIntoView({behavior:'smooth'}); }, 60); }
-  setTimeout(revealObserve, 30);
   updateBottomNavActive(view);
 }
 function updateBottomNavActive(view){
@@ -891,6 +890,8 @@ function renderView(){
   if(currentView==='track') setTimeout(initTrackingMap, 30);
   else if(trackingPoll){ clearInterval(trackingPoll); trackingPoll=null; }
   if(currentView==='detail') fetchServiceReviews(currentDetailId);
+  // Observe after every render, including delayed admin pricing updates that replace the initial DOM.
+  setTimeout(revealObserve, 30);
 }
 /* Best-effort: pull any reviews left via the backend and merge them in without a full re-render jolt */
 async function fetchServiceReviews(id){
