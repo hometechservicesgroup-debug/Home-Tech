@@ -62,6 +62,7 @@
     <input id="password" type="password" placeholder="Password">
     <p id="loginErr" class="err"></p>
     <button class="btn-primary" onclick="login()">Log In</button>
+    <button class="btn-ghost" onclick="loginWithGoogle()" style="width:100%; margin-top:10px;">Continue with Google</button>
     <p style="font-size:12px; color:var(--ink2); text-align:center; margin-top:14px;">Forgot password? Reset it on the main Hometake Services website.</p>
   </div>
 </div>
@@ -125,8 +126,6 @@
 
 <script>
 const STATUS_STAGES = ['Requested','Confirmed','Technician Assigned','On the Way','In Progress','Completed'];
-/* Set this to the SAME public Razorpay Key ID used in hometech-services.html — needed for wallet recharge. */
-let RAZORPAY_KEY_ID = '';
 let session = null; // { token, apiBase }
 let locationIntervals = {}; // bookingId -> intervalId
 const API_BASE_META = document.querySelector('meta[name="api-base"]');
@@ -221,15 +220,6 @@ function toggleTxnHistory(){
   el.style.display = el.style.display==='none' ? 'block' : 'none';
 }
 
-function loadRazorpayScript(){
-  return new Promise((resolve,reject)=>{
-    if(window.Razorpay){ resolve(); return; }
-    const s = document.createElement('script');
-    s.src = 'https://checkout.razorpay.com/v1/checkout.js';
-    s.onload = resolve; s.onerror = ()=>reject(new Error('Could not load payment gateway — check your internet connection.'));
-    document.body.appendChild(s);
-  });
-}
 async function startRecharge(fromDash){
   const amountInput = document.getElementById(fromDash ? 'rechargeAmount2' : 'rechargeAmount');
   const errEl = document.getElementById(fromDash ? 'rechargeErr2' : 'rechargeErr');
@@ -242,27 +232,54 @@ async function startRecharge(fromDash){
     });
     const order = await orderRes.json();
     if(!orderRes.ok) throw new Error(order.error || 'Could not start recharge.');
-    await loadRazorpayScript();
-    const keyId = order.keyId || RAZORPAY_KEY_ID;
-    if(!keyId) throw new Error('Online wallet recharge is not configured. Contact the administrator.');
-    const rz = new Razorpay({
-      key: keyId, amount: order.amount, currency:'INR', name:'Home-Tech Services — Wallet Recharge', order_id: order.id,
-      theme:{ color:'#6d7cff' },
-      handler: async function(response){
-        try{
-          const verifyRes = await fetch(`${session.apiBase}/api/partner/wallet/verify-payment`, {
-            method:'POST', headers:{'Content-Type':'application/json','x-session-token':session.token},
-            body: JSON.stringify({ ...response, amount })
-          });
-          const verify = await verifyRes.json();
-          if(!verifyRes.ok) throw new Error(verify.error);
-          location.reload();
-        } catch(e){ errEl.textContent = 'Payment could not be verified: ' + e.message; errEl.style.display='block'; }
-      },
-      modal:{ ondismiss: function(){ errEl.textContent='Payment was cancelled.'; errEl.style.display='block'; } }
-    });
-    rz.open();
+    if(order.provider!=='phonepe'||!order.redirectUrl) throw new Error(order.error||'PhonePe wallet checkout is not configured.');
+    sessionStorage.setItem('ht_phonepe_wallet_pending',order.orderId);
+    location.assign(order.redirectUrl);
   } catch(e){ errEl.textContent = e.message; errEl.style.display='block'; }
+}
+
+async function loginWithGoogle(){
+  const apiBase=(document.getElementById('apiBase').value.trim()||defaultApiBase()).replace(/\/$/,'');
+  document.getElementById('loginErr').style.display='none';
+  try{
+    await new Promise((resolve,reject)=>{
+      if(window.firebase&&window.firebase.auth) return resolve();
+      const appScript=document.createElement('script'); appScript.src='https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js'; appScript.onload=()=>{const authScript=document.createElement('script');authScript.src='https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js';authScript.onload=resolve;authScript.onerror=()=>reject(new Error('Could not load Google sign-in.'));document.head.appendChild(authScript);};appScript.onerror=()=>reject(new Error('Could not load Google sign-in.'));document.head.appendChild(appScript);
+    });
+    if(!window.hometakeFirebaseApp){
+      const configRes=await fetch(`${apiBase}/api/auth/firebase-config`);const config=await configRes.json();
+      if(!configRes.ok) throw new Error(config.error||'Firebase sign-in is not configured.');
+      window.hometakeFirebaseApp=window.firebase.initializeApp(config,'hometake-partner-google');
+    }
+    const auth=window.hometakeFirebaseApp.auth();auth.useDeviceLanguage();
+    const result=await auth.signInWithPopup(new window.firebase.auth.GoogleAuthProvider());
+    const idToken=await result.user.getIdToken(true);
+    const res=await fetch(`${apiBase}/api/auth/google-login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken})});
+    const data=await res.json();try{await auth.signOut();}catch{}
+    if(!res.ok) throw new Error(data.error||'Google sign-in failed.');
+    if(data.user.role!=='partner') throw new Error('This Google account belongs to a customer account.');
+    session={token:data.token,apiBase};sessionStorage.setItem('ht_partner_session',JSON.stringify(session));await afterLogin(data.user);
+  }catch(error){
+    const code=String(error&&error.code||'');
+    if(code.includes('popup-closed-by-user')) return;
+    showErr('loginErr',code.includes('unauthorized-domain')?'Add this exact website domain in Firebase Authentication → Settings → Authorized domains.':code.includes('popup-closed-by-user')?'':'Google sign-in failed: '+(error.message||'please retry.'));
+  }
+}
+
+async function handlePhonePeWalletReturn(){
+  const params=new URLSearchParams(location.search);
+  if(params.get('payment')!=='phonepe-wallet-return') return;
+  const orderId=params.get('orderId')||'';
+  try{
+    if(!session) throw new Error('Log in to your partner account again to check the wallet payment.');
+    if(!/^[A-Za-z0-9_-]{1,63}$/.test(orderId)||sessionStorage.getItem('ht_phonepe_wallet_pending')!==orderId) throw new Error('This wallet payment return does not match the order started in this browser.');
+    const res=await fetch(`${session.apiBase}/api/partner/wallet/verify-payment`,{method:'POST',headers:{'Content-Type':'application/json','x-session-token':session.token},body:JSON.stringify({orderId})});
+    const data=await res.json();
+    if(!res.ok||!data.success) throw new Error(data.error||'PhonePe payment is not confirmed yet.');
+    sessionStorage.removeItem('ht_phonepe_wallet_pending');
+    history.replaceState({},document.title,location.pathname);
+    location.reload();
+  }catch(error){ alert(error.message||'Could not confirm the PhonePe wallet recharge.'); }
 }
 
 function logout(){
@@ -368,6 +385,7 @@ window.addEventListener('DOMContentLoaded', async ()=>{
       if(meRes.ok){ const me = await meRes.json(); document.getElementById('loginView').style.display='none'; await afterLogin(me.user); }
     } catch(e){ /* fall back to login form */ }
   }
+  await handlePhonePeWalletReturn();
 });
 
 setTimeout(()=>{ const l=document.getElementById('appLoader'); if(l) l.classList.add('loaded'); }, 700);

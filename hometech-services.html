@@ -1431,9 +1431,11 @@ async function finalizeBooking(details, paymentMethod, payment={}){
         <button onclick="closeModal(); go('home');" class="w-full py-3.5 rounded-full btn-ghost text-white text-[14px] font-medium">Back to Home</button>
       </div>
     </div>`);
+    return true;
   } catch(error){
     errorEl.textContent = error.message || 'Booking could not be saved. Please try again.';
     errorEl.classList.remove('hidden');
+    return false;
   }
 }
 function escapeHtml(value){
@@ -1442,7 +1444,7 @@ function escapeHtml(value){
 function inlineArg(value){ return escapeHtml(JSON.stringify(String(value ?? ''))); }
 function formatDate(d){ if(!d) return ''; return new Date(d+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'}); }
 
-/* ============ AUTH: OTP-verified signup, email+password login, OTP-verified password reset ============ */
+/* ============ AUTH: Firebase phone OTP signup, email+password login, Firebase phone OTP password reset ============ */
 /* Point this at your deployed Node.js backend (see server.js you download separately).
    NOTE: this claude.ai preview link cannot reach an external server — these calls only work once
    this file is hosted on your own domain pointing at your backend. */
@@ -1451,12 +1453,9 @@ const isLocalHost = ['localhost','127.0.0.1'].includes(location.hostname);
 const isLocalStaticPage = location.protocol==='file:' || (isLocalHost && ['','5500','5501','5502'].includes(location.port));
 const LOCAL_API_BASE = isLocalStaticPage ? 'http://localhost:4000' : location.origin;
 const OTP_API_BASE = (window.HOMETakeApiBase || (API_BASE_META && API_BASE_META.content) || LOCAL_API_BASE).replace(/\/$/, '');
-/* Razorpay Key ID is safe to expose in frontend code (it's public by design) — NEVER put the Key Secret here. */
-const RAZORPAY_KEY_ID = '';
+let authState = { role:'customer', step:'choose', identifier:'', verifyToken:'', confirmationResult:null };
 
-let authState = { role:'customer', step:'choose', channel:'sms', identifier:'', verifyToken:'', challengeToken:'' };
-
-function resetAuthState(){ authState = { role:'customer', step:'choose', channel:'sms', identifier:'', verifyToken:'', challengeToken:'' }; }
+function resetAuthState(){ authState = { role:'customer', step:'choose', identifier:'', verifyToken:'', confirmationResult:null }; }
 
 /* ---- LOGIN (email + password) ---- */
 function renderLoginView(){
@@ -1476,6 +1475,7 @@ function renderLoginView(){
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
       <button onclick="go('forgot')" class="text-[12.5px] text-[var(--indigo-0)] hover:underline mb-5 block">Forgot Password?</button>
       <button onclick="doLogin()" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4">Sign In</button>
+      <button onclick="loginWithGoogle()" class="w-full py-3 rounded-full btn-ghost text-white text-[14px] font-medium mb-4">Continue with Google</button>
       <p class="text-[13px] text-[var(--ink-2)] text-center">New here? <button onclick="resetAuthState(); go('signup')" class="text-[var(--indigo-0)] hover:underline">Create an account</button></p>
     </div>
   </section>`;
@@ -1514,15 +1514,10 @@ function signupChooseStep(){
       <div class="lc-wrap" id="lcWrap"><svg viewBox="0 0 240 130" aria-hidden="true"><g class="lc-body"><rect x="20" y="20" width="60" height="110" rx="10" fill="#6d5df6"/><g class="lc-eye"><circle cx="40" cy="50" r="6.5" fill="#fff"/><circle class="lc-pupil" cx="40" cy="50" r="3.2" fill="#111"/></g><g class="lc-eye"><circle cx="62" cy="50" r="6.5" fill="#fff"/><circle class="lc-pupil" cx="62" cy="50" r="3.2" fill="#111"/></g><path d="M42 72q9 6 18 0" stroke="#111" stroke-width="2.5" fill="none" stroke-linecap="round"/></g><g class="lc-body lc-b2"><rect x="82" y="50" width="42" height="80" rx="8" fill="#1c1f2b"/><g class="lc-eye"><circle cx="96" cy="72" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="96" cy="72" r="2.8" fill="#111"/></g><g class="lc-eye"><circle cx="112" cy="72" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="112" cy="72" r="2.8" fill="#111"/></g></g><g class="lc-body lc-b3"><path d="M120 130a55 55 0 0 1 110 0z" fill="#ff8a3d"/><g class="lc-eye"><circle cx="160" cy="104" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="160" cy="104" r="2.8" fill="#111"/></g><g class="lc-eye"><circle cx="184" cy="104" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="184" cy="104" r="2.8" fill="#111"/></g><path d="M166 116q6 5 12 0" stroke="#111" stroke-width="2.5" fill="none" stroke-linecap="round"/></g><g class="lc-body lc-b4"><rect x="128" y="62" width="44" height="68" rx="20" fill="#f2c94c"/><g class="lc-eye"><circle cx="142" cy="84" r="5" fill="#fff"/><circle class="lc-pupil" cx="142" cy="84" r="2.5" fill="#111"/></g><g class="lc-eye"><circle cx="158" cy="84" r="5" fill="#fff"/><circle class="lc-pupil" cx="158" cy="84" r="2.5" fill="#111"/></g></g></svg></div>
       <h2 class="font-display text-[26px] text-white mb-1">Create Account</h2>
       <p class="text-[13px] text-[var(--ink-2)] mb-6">Verify with OTP first, then set your password.</p>
-      <div class="grid grid-cols-2 gap-2 mb-5 p-1 rounded-full glass">
-        <button onclick="authState.channel='sms'; go('signup');" class="py-2.5 rounded-full text-[13px] font-medium ${authState.channel==='sms'?'btn-primary text-white':'text-[var(--ink-1)]'}">Phone OTP</button>
-        <button onclick="authState.channel='email'; go('signup');" class="py-2.5 rounded-full text-[13px] font-medium ${authState.channel==='email'?'btn-primary text-white':'text-[var(--ink-1)]'}">Email OTP</button>
-      </div>
-      ${authState.channel==='sms'
-        ? `<input id="authIdentifier" type="tel" placeholder="10-digit mobile number" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">`
-        : `<input id="authIdentifier" type="email" placeholder="Email address" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">`}
+      <input id="authIdentifier" type="tel" placeholder="10-digit mobile number" autocomplete="tel" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
-      <p class="text-[11.5px] text-[var(--ink-2)] mb-5">Limited to 3 OTPs per ${authState.channel==='sms'?'number':'email'} per day.</p>
+      <p class="text-[11.5px] text-[var(--ink-2)] mb-3">Firebase will send a one-time SMS code. Limited to 3 requests per day per number.</p>
+      <div id="firebase-recaptcha-signup"></div>
       <button onclick="sendOtp('signup')" id="sendOtpBtn" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4">Send OTP</button>
       <p class="text-[13px] text-[var(--ink-2)] text-center">Already have an account? <button onclick="resetAuthState(); go('login')" class="text-[var(--indigo-0)] hover:underline">Log In</button></p>
     </div>
@@ -1532,11 +1527,12 @@ function signupOtpStep(){
   return `
   <section class="px-5 sm:px-8 py-16 sm:py-24">
     <div class="max-w-sm mx-auto glass rounded-3xl p-8">
-      <button onclick="authState.step='choose'; go('signup');" class="text-[12.5px] text-[var(--ink-2)] hover:text-white mb-5 flex items-center gap-1"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>Change ${authState.channel==='sms'?'number':'email'}</button>
+      <button onclick="authState.step='choose'; go('signup');" class="text-[12.5px] text-[var(--ink-2)] hover:text-white mb-5 flex items-center gap-1"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>Change phone number</button>
       <div class="lc-wrap" id="lcWrap"><svg viewBox="0 0 240 130" aria-hidden="true"><g class="lc-body"><rect x="20" y="20" width="60" height="110" rx="10" fill="#6d5df6"/><g class="lc-eye"><circle cx="40" cy="50" r="6.5" fill="#fff"/><circle class="lc-pupil" cx="40" cy="50" r="3.2" fill="#111"/></g><g class="lc-eye"><circle cx="62" cy="50" r="6.5" fill="#fff"/><circle class="lc-pupil" cx="62" cy="50" r="3.2" fill="#111"/></g><path d="M42 72q9 6 18 0" stroke="#111" stroke-width="2.5" fill="none" stroke-linecap="round"/></g><g class="lc-body lc-b2"><rect x="82" y="50" width="42" height="80" rx="8" fill="#1c1f2b"/><g class="lc-eye"><circle cx="96" cy="72" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="96" cy="72" r="2.8" fill="#111"/></g><g class="lc-eye"><circle cx="112" cy="72" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="112" cy="72" r="2.8" fill="#111"/></g></g><g class="lc-body lc-b3"><path d="M120 130a55 55 0 0 1 110 0z" fill="#ff8a3d"/><g class="lc-eye"><circle cx="160" cy="104" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="160" cy="104" r="2.8" fill="#111"/></g><g class="lc-eye"><circle cx="184" cy="104" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="184" cy="104" r="2.8" fill="#111"/></g><path d="M166 116q6 5 12 0" stroke="#111" stroke-width="2.5" fill="none" stroke-linecap="round"/></g><g class="lc-body lc-b4"><rect x="128" y="62" width="44" height="68" rx="20" fill="#f2c94c"/><g class="lc-eye"><circle cx="142" cy="84" r="5" fill="#fff"/><circle class="lc-pupil" cx="142" cy="84" r="2.5" fill="#111"/></g><g class="lc-eye"><circle cx="158" cy="84" r="5" fill="#fff"/><circle class="lc-pupil" cx="158" cy="84" r="2.5" fill="#111"/></g></g></svg></div>
       <h2 class="font-display text-[24px] text-white mb-1">Enter OTP</h2>
-      <p class="text-[13px] text-[var(--ink-2)] mb-6">Sent to <span class="text-white">${escapeHtml(authState.identifier)}</span> via ${authState.channel==='sms'?'SMS':'email'}.</p>
+      <p class="text-[13px] text-[var(--ink-2)] mb-6">Sent to <span class="text-white">${escapeHtml(authState.identifier)}</span> by SMS.</p>
       <input id="otpCode" inputmode="numeric" maxlength="6" placeholder="6-digit code" class="lc-input w-full rounded-xl px-4 py-3 text-[18px] tracking-[0.3em] text-center mb-2">
+      <div id="firebase-recaptcha-signup"></div>
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
       <button onclick="verifyOtp('signup')" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4">Verify & Continue</button>
       <p class="text-[13px] text-[var(--ink-2)] text-center">Didn't get it? <button id="resendBtn" onclick="sendOtp('signup', true)" class="text-[var(--indigo-0)] hover:underline">Resend OTP</button></p>
@@ -1551,7 +1547,7 @@ function signupSetupStep(){
       <h2 class="font-display text-[24px] text-white mb-1">Set Up Your Account</h2>
       <p class="text-[13px] text-[var(--ink-2)] mb-6">Verified! Now add a name, email and password for future logins.</p>
       <input id="suName" placeholder="Full Name" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-3">
-      <input id="suEmail" type="email" placeholder="Email" value="${escapeHtml(authState.channel==='email'?authState.identifier:'')}" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-3">
+      <input id="suEmail" type="email" placeholder="Email" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-3">
       <input id="suPass" type="password" placeholder="Create Password (min 6 characters)" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-3">
       <input id="suPass2" type="password" placeholder="Confirm Password" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
@@ -1562,51 +1558,107 @@ function signupSetupStep(){
 function authErr(msg){ const e=document.getElementById('authError'); if(e){ e.textContent=msg; e.classList.remove('hidden'); } }
 
 /* purpose: 'signup' | 'forgot' — decides where sendOtp/verifyOtp send the user next */
-async function sendOtp(purpose, isResend){
-  const err = document.getElementById('authError'); if(err) err.classList.add('hidden');
-  let identifier = authState.identifier;
-  if(!isResend){
-    identifier = document.getElementById('authIdentifier').value.trim();
-    if(authState.channel==='sms'){
-      if(identifier.replace(/\D/g,'').length<10){ authErr('Please enter a valid 10-digit mobile number.'); return; }
-      identifier = '+91' + identifier.replace(/\D/g,'').slice(-10);
-    } else {
-      if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)){ authErr('Please enter a valid email address.'); return; }
-    }
-    authState.identifier = identifier;
-  }
-  const btn = document.getElementById('sendOtpBtn') || document.getElementById('resendBtn');
-  if(btn){ btn.textContent = 'Sending…'; btn.disabled = true; }
+function loadScriptOnce(src){
+  return new Promise((resolve,reject)=>{
+    const existing=document.querySelector(`script[src="${src}"]`);
+    if(existing){ if(existing.dataset.loaded==='true') return resolve(); existing.addEventListener('load',resolve,{once:true}); existing.addEventListener('error',reject,{once:true}); return; }
+    const script=document.createElement('script'); script.src=src; script.async=true;
+    script.onload=()=>{script.dataset.loaded='true';resolve();}; script.onerror=()=>reject(new Error('Could not load Firebase phone sign-in.'));
+    document.head.appendChild(script);
+  });
+}
+async function loginWithGoogle(){
+  const err=document.getElementById('authError'); err.classList.add('hidden');
   try{
-    const res = await fetch(`${OTP_API_BASE}/api/send-otp`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ identifier, channel: authState.channel })
-    });
-    const data = await res.json();
-    if(!res.ok){ authErr(data.error || 'Could not send OTP. Please try again.'); if(btn){ btn.textContent = isResend?'Resend OTP':'Send OTP'; btn.disabled=false; } return; }
-    authState.challengeToken = data.challengeToken || '';
-    if(!authState.challengeToken){ authErr('OTP service did not return a valid request. Please try again.'); if(btn){ btn.textContent = isResend?'Resend OTP':'Send OTP'; btn.disabled=false; } return; }
-    authState.step = 'otp';
-    go(purpose==='forgot' ? 'forgot' : 'signup');
-  } catch(e){
-    authErr('Could not reach the OTP server. Make sure your backend is deployed and OTP_API_BASE is set correctly in the code.');
-    if(btn){ btn.textContent = isResend?'Resend OTP':'Send OTP'; btn.disabled=false; }
+    const auth=await getFirebasePhoneAuth();
+    const provider=new window.firebase.auth.GoogleAuthProvider();
+    const result=await auth.signInWithPopup(provider);
+    const idToken=await result.user.getIdToken(true);
+    const res=await fetch(`${OTP_API_BASE}/api/auth/google-login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken})});
+    const data=await res.json();
+    try{await auth.signOut();}catch{}
+    if(!res.ok) throw new Error(data.error||'Google sign-in failed.');
+    setSession(data.token,data.user); refreshAuthNav(); go('account');
+  }catch(error){
+    const code=String(error&&error.code||'');
+    if(code.includes('popup-closed-by-user')) return;
+    authErr(code.includes('unauthorized-domain')?'Add this website domain in Firebase Authentication → Settings → Authorized domains.':error.message||'Google sign-in failed.');
+  }
+}
+async function getFirebasePhoneAuth(){
+  await loadScriptOnce('https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js');
+  await loadScriptOnce('https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js');
+  if(!window.hometakeFirebaseApp){
+    const configRes=await fetch(`${OTP_API_BASE}/api/auth/firebase-config`);
+    const config=await configRes.json();
+    if(!configRes.ok) throw new Error(config.error||'Firebase phone sign-in is not configured yet.');
+    window.hometakeFirebaseApp=window.firebase.initializeApp(config,'hometake-phone-auth');
+  }
+  const auth=window.hometakeFirebaseApp.auth(); auth.useDeviceLanguage();
+  return auth;
+}
+function firebaseOtpMessage(error){
+  const code=String(error&&error.code||'');
+  if(code.includes('too-many-requests')) return 'Too many OTP requests. Please wait before trying again.';
+  if(code.includes('invalid-phone-number')) return 'Enter a valid mobile number with country code.';
+  if(code.includes('operation-not-allowed')) return 'Phone OTP is not enabled in the Firebase project yet.';
+  if(code.includes('billing-not-enabled')) return 'Firebase Phone OTP needs billing enabled for this Firebase project.';
+  if(code.includes('captcha-check-failed')||code.includes('invalid-app-credential')||code.includes('app-not-authorized')||code.includes('unauthorized-domain')) return 'Firebase blocked this website. Add the exact Netlify domain in Firebase Authentication → Settings → Authorized domains, then retry.';
+  if(code.includes('quota-exceeded')) return 'Firebase SMS quota is exhausted. Check the Firebase Authentication usage and billing limits.';
+  if(code.includes('missing-phone-number')) return 'Enter the customer mobile number first.';
+  if(code.includes('network-request-failed')) return 'Internet connection failed while requesting the SMS. Check the connection and retry.';
+  return error&&error.message||'Firebase could not send the OTP. Please try again.';
+}
+async function sendOtp(purpose, isResend){
+  const err=document.getElementById('authError'); if(err) err.classList.add('hidden');
+  let phone=authState.identifier;
+  if(!isResend){
+    const raw=document.getElementById('authIdentifier').value.trim();
+    const digits=raw.replace(/\D/g,'');
+    if(digits.length<10||digits.length>12){authErr('Please enter a valid Indian mobile number.');return;}
+    phone='+'+(digits.length===10?'91'+digits:digits.startsWith('91')?digits:digits);
+    if(!/^\+91\d{10}$/.test(phone)){authErr('Please enter a valid Indian mobile number.');return;}
+    authState.identifier=phone;
+  }
+  const btn=document.getElementById('sendOtpBtn')||document.getElementById('resendBtn');
+  if(btn){btn.textContent='Sending…';btn.disabled=true;}
+  try{
+    const auth=await getFirebasePhoneAuth();
+    if(window.hometakeRecaptcha){try{window.hometakeRecaptcha.clear();}catch{} window.hometakeRecaptcha=null;}
+    const recaptchaContainerId=purpose==='forgot'?'firebase-recaptcha-forgot':'firebase-recaptcha-signup';
+    const recaptchaElement=document.getElementById(recaptchaContainerId);
+    if(!recaptchaElement) throw new Error('Phone verification could not start. Refresh the page and try again.');
+    window.hometakeRecaptcha=new window.firebase.auth.RecaptchaVerifier(recaptchaContainerId,{size:'normal'});
+    await window.hometakeRecaptcha.render();
+    const limitRes=await fetch(`${OTP_API_BASE}/api/auth/otp-attempt`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+    const limitData=await limitRes.json();
+    if(!limitRes.ok) throw new Error(limitData.error||'OTP request limit reached.');
+    authState.confirmationResult=await auth.signInWithPhoneNumber(phone,window.hometakeRecaptcha);
+    authState.step='otp';
+    go(purpose==='forgot'?'forgot':'signup');
+  }catch(error){
+    authErr(firebaseOtpMessage(error));
+    if(btn){btn.textContent=isResend?'Resend OTP':'Send OTP';btn.disabled=false;}
+    if(window.hometakeRecaptcha){try{window.hometakeRecaptcha.clear();}catch{} window.hometakeRecaptcha=null;}
   }
 }
 async function verifyOtp(purpose){
-  const code = document.getElementById('otpCode').value.trim();
-  if(code.length<4){ authErr('Please enter the OTP you received.'); return; }
+  const code=document.getElementById('otpCode').value.trim();
+  if(!/^\d{6}$/.test(code)){authErr('Enter the 6-digit code received by SMS.');return;}
   try{
-    const res = await fetch(`${OTP_API_BASE}/api/verify-otp`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ identifier: authState.identifier, code, challengeToken: authState.challengeToken })
-    });
-    const data = await res.json();
-    if(!res.ok || !data.success){ authErr(data.error || 'Incorrect or expired OTP.'); return; }
-    authState.verifyToken = data.verifyToken;
-    authState.step = purpose==='forgot' ? 'newpass' : 'setup';
-    go(purpose==='forgot' ? 'forgot' : 'signup');
-  } catch(e){ authErr('Could not reach the OTP server.'); }
+    if(!authState.confirmationResult) throw new Error('This OTP request expired. Send a new code.');
+    const result=await authState.confirmationResult.confirm(code);
+    const idToken=await result.user.getIdToken(true);
+    const res=await fetch(`${OTP_API_BASE}/api/auth/verify-firebase-phone`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken})});
+    const data=await res.json();
+    if(!res.ok||!data.success) throw new Error(data.error||'Phone verification failed.');
+    authState.verifyToken=data.verifyToken;
+    authState.identifier=data.identifier;
+    authState.confirmationResult=null;
+    try{await window.hometakeFirebaseApp.auth().signOut();}catch{}
+    authState.step=purpose==='forgot'?'newpass':'setup';
+    go(purpose==='forgot'?'forgot':'signup');
+  }catch(error){authErr(firebaseOtpMessage(error));}
 }
 async function finishSignup(){
   const name = document.getElementById('suName').value.trim();
@@ -1642,13 +1694,7 @@ function forgotChooseStep(){
     <div class="max-w-sm mx-auto glass rounded-3xl p-8">
       <h2 class="font-display text-[24px] text-white mb-1">Reset Password</h2>
       <p class="text-[13px] text-[var(--ink-2)] mb-6">Verify it's you, then set a new password.</p>
-      <div class="grid grid-cols-2 gap-2 mb-5 p-1 rounded-full glass">
-        <button onclick="authState.channel='sms'; go('forgot');" class="py-2.5 rounded-full text-[13px] font-medium ${authState.channel==='sms'?'btn-primary text-white':'text-[var(--ink-1)]'}">Phone OTP</button>
-        <button onclick="authState.channel='email'; go('forgot');" class="py-2.5 rounded-full text-[13px] font-medium ${authState.channel==='email'?'btn-primary text-white':'text-[var(--ink-1)]'}">Email OTP</button>
-      </div>
-      ${authState.channel==='sms'
-        ? `<input id="authIdentifier" type="tel" placeholder="Your registered mobile number" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">`
-        : `<input id="authIdentifier" type="email" placeholder="Your registered email" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">`}
+      <input id="authIdentifier" type="tel" placeholder="Your registered mobile number" autocomplete="tel" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
       <button onclick="sendOtp('forgot')" id="sendOtpBtn" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4 mt-3">Send OTP</button>
       <p class="text-[13px] text-[var(--ink-2)] text-center"><button onclick="resetAuthState(); go('login')" class="text-[var(--indigo-0)] hover:underline">Back to Login</button></p>
@@ -1662,6 +1708,7 @@ function forgotOtpStep(){
       <h2 class="font-display text-[24px] text-white mb-1">Enter OTP</h2>
       <p class="text-[13px] text-[var(--ink-2)] mb-6">Sent to <span class="text-white">${escapeHtml(authState.identifier)}</span>.</p>
       <input id="otpCode" inputmode="numeric" maxlength="6" placeholder="6-digit code" class="lc-input w-full rounded-xl px-4 py-3 text-[18px] tracking-[0.3em] text-center mb-2">
+      <div id="firebase-recaptcha-forgot"></div>
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
       <button onclick="verifyOtp('forgot')" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4">Verify</button>
       <p class="text-[13px] text-[var(--ink-2)] text-center">Didn't get it? <button id="resendBtn" onclick="sendOtp('forgot', true)" class="text-[var(--indigo-0)] hover:underline">Resend OTP</button></p>
@@ -2001,22 +2048,11 @@ function initTrackingMap(){
   }, 8000);
 }
 
-/* ============ PAYMENTS (Razorpay) ============ */
-/* Standard Checkout needs an order created server-side (see server.js /api/create-order) —
-   this keeps your Razorpay Key Secret off the public website. */
+/* ============ PAYMENTS (PhonePe) ============ */
 let selectedPaymentMethod = 'cod'; // 'cod' | 'online'
 function setPaymentMethod(m){
   selectedPaymentMethod = m;
   document.querySelectorAll('.pay-method-btn').forEach(b=> b.classList.toggle('selected', b.dataset.method===m));
-}
-function loadRazorpayScript(){
-  return new Promise((resolve,reject)=>{
-    if(window.Razorpay){ resolve(); return; }
-    const s = document.createElement('script');
-    s.src = 'https://checkout.razorpay.com/v1/checkout.js';
-    s.onload = resolve; s.onerror = ()=>reject(new Error('Could not load Razorpay checkout — check your internet connection.'));
-    document.body.appendChild(s);
-  });
 }
 async function payOnlineThenBook(bookingDetails){
   const err = document.getElementById('bookingError');
@@ -2031,35 +2067,46 @@ async function payOnlineThenBook(bookingDetails){
     });
     const order = await orderRes.json();
     if(!orderRes.ok) throw new Error(order.error || 'Could not create payment order.');
-    await loadRazorpayScript();
-    const rz = new Razorpay({
-      key: order.keyId || RAZORPAY_KEY_ID,
-      amount: order.amount,
-      currency: 'INR',
-      name: 'Home-Tech Services',
-      description: order.paymentMode === 'test' ? `TEST PAYMENT — no real charge (${bookingDetails.bookingId})` : bookingDetails.bookingId,
-      order_id: order.id,
-      prefill: { name: bookingDetails.name, contact: bookingDetails.phone, email: bookingDetails.email || '' },
-      theme: { color: '#6d7cff' },
-      handler: async function(response){
-        try{
-          const verifyRes = await fetch(`${OTP_API_BASE}/api/verify-payment`, {
-            method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()},
-            body: JSON.stringify(response)
-          });
-          const verify = await verifyRes.json();
-          if(verify.success){ finalizeBooking(bookingDetails, 'online', { orderId:response.razorpay_order_id, paymentId:response.razorpay_payment_id }); }
-          else { err.textContent = 'Payment could not be verified. Please try again or choose Pay After Service.'; err.classList.remove('hidden'); }
-        } catch(e){ err.textContent = 'Payment verification failed.'; err.classList.remove('hidden'); }
-      },
-      modal: { ondismiss: function(){ err.textContent='Payment was cancelled.'; err.classList.remove('hidden'); } }
-    });
-    rz.open();
+    if(order.provider!=='phonepe'||!order.redirectUrl) throw new Error(order.error || 'PhonePe checkout is not configured on the server yet.');
+    sessionStorage.setItem('ht_phonepe_pending_booking',JSON.stringify({details:bookingDetails,cart:getCart(),location:bookingCtx.locationStatus==='granted'?{status:'granted',lat:bookingCtx.lat,lng:bookingCtx.lng}:{status:'denied'}}));
+    location.assign(order.redirectUrl);
   } catch(e){
     err.textContent = e.message || 'Online payment is not available right now — please choose Pay After Service, or contact us on WhatsApp.';
     err.classList.remove('hidden');
   }
 }
+
+async function handlePhonePeReturn(){
+  const params=new URLSearchParams(location.search);
+  if(params.get('payment')!=='phonepe-return') return;
+  const orderId=params.get('orderId')||'';
+  const pendingRaw=sessionStorage.getItem('ht_phonepe_pending_booking');
+  const err=document.getElementById('bookingError');
+  try{
+    if(!/^[A-Za-z0-9_-]{1,63}$/.test(orderId)) throw new Error('PhonePe return order ID is invalid.');
+    if(!getSession()) throw new Error('Please log in again, then retry payment confirmation.');
+    if(!pendingRaw) throw new Error('Booking details were not found on this browser. Please contact support before paying again.');
+    const pending=JSON.parse(pendingRaw);
+    const verifyRes=await fetch(`${OTP_API_BASE}/api/verify-phonepe-payment`,{method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:JSON.stringify({orderId})});
+    const verify=await verifyRes.json();
+    if(!verifyRes.ok||!verify.success) throw new Error(verify.error||'PhonePe payment is not confirmed yet.');
+    if(!pending.details||!pending.cart) throw new Error('Saved booking details are incomplete. Please contact support.');
+    setCart(pending.cart);
+    bookingCtx.locationStatus=pending.location&&pending.location.status||'denied';
+    bookingCtx.lat=pending.location&&pending.location.lat||null;
+    bookingCtx.lng=pending.location&&pending.location.lng||null;
+    const booked=await finalizeBooking(pending.details,'online',{orderId:verify.orderId,paymentId:verify.paymentId});
+    if(booked){
+      sessionStorage.removeItem('ht_phonepe_pending_booking');
+      params.delete('payment');params.delete('orderId');
+      history.replaceState({},document.title,location.pathname+(params.toString()?'?'+params.toString():'')+location.hash);
+    }
+  }catch(error){
+    if(err){err.textContent=error.message||'Could not confirm PhonePe payment.';err.classList.remove('hidden');}
+    go('booking');
+  }
+}
+window.addEventListener('load',()=>{handlePhonePeReturn();});
 
 /* ============ MODAL ============ */
 function showModal(html){
@@ -2153,7 +2200,8 @@ async function applyPriceOverrides(){
       if(!s) return;
       if(s.price !== item.price){ s.price = item.price; changed = true; }
       if(Array.isArray(item.options) && JSON.stringify(s.opts)!==JSON.stringify(item.options)){ s.opts = item.options; changed = true; }
-      if(item.image && /^\/uploads\/[A-Za-z0-9._-]+$/.test(item.image) && s.customImage !== `${OTP_API_BASE}${item.image}`){ s.customImage = `${OTP_API_BASE}${item.image}`; changed = true; }
+      const resolvedImage = item.image && item.image.startsWith('https://firebasestorage.googleapis.com/') ? item.image : item.image && /^\/uploads\/[A-Za-z0-9._-]+$/.test(item.image) ? `${OTP_API_BASE}${item.image}` : '';
+      if(resolvedImage && s.customImage !== resolvedImage){ s.customImage = resolvedImage; changed = true; }
     });
     // Remove any custom services the admin has since deleted
     const liveIds = new Set(list.map(i=>i.id));
@@ -2187,9 +2235,10 @@ async function applyBrandingSettings(){
       const footerBrand = document.getElementById('footerBrandName');
       if(footerBrand) footerBrand.textContent = settings.siteName;
     }
-    if(settings.logoUrl && /^\/uploads\/[A-Za-z0-9._-]+$/.test(settings.logoUrl)){
+    if(settings.logoUrl && (settings.logoUrl.startsWith('https://firebasestorage.googleapis.com/') || /^\/uploads\/[A-Za-z0-9._-]+$/.test(settings.logoUrl))){
       const badge = document.getElementById('logoBadge');
-      if(badge) badge.innerHTML = `<img src="${escapeHtml(`${OTP_API_BASE}${settings.logoUrl}`)}" class="w-full h-full object-cover" alt="logo">`;
+      const logo = settings.logoUrl.startsWith('https://firebasestorage.googleapis.com/') ? settings.logoUrl : `${OTP_API_BASE}${settings.logoUrl}`;
+      if(badge) badge.innerHTML = `<img src="${escapeHtml(logo)}" class="w-full h-full object-cover" alt="logo">`;
     }
   } catch(e){ /* no backend yet — keep default branding */ }
 }

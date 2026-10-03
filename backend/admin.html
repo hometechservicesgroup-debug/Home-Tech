@@ -409,7 +409,7 @@ async function loadPrices(){
     list.innerHTML = services.map(s => `
       <div class="price-row" style="flex-wrap:wrap;">
         <div class="row" style="flex:1; min-width:200px;">
-          ${s.image ? `<img src="${escapeHtml(session.apiBase+s.image)}" style="width:40px;height:36px;object-fit:cover;border-radius:8px;">` : ''}
+          ${s.image ? `<img src="${escapeHtml(s.image.startsWith('https://firebasestorage.googleapis.com/') ? s.image : session.apiBase+s.image)}" style="width:40px;height:36px;object-fit:cover;border-radius:8px;">` : ''}
           <span>${escapeHtml(s.name)}${s.custom ? ' <span style="font-size:10px; color:var(--indigo);">(custom)</span>' : ''}</span>
         </div>
         <div class="row">
@@ -470,8 +470,8 @@ async function loadGallery(){
     grid.innerHTML = items.map(g => `
       <div class="gallery-item">
         ${g.type==='video'
-          ? `<video src="${escapeHtml(session.apiBase+g.src)}" class="thumb" controls></video>`
-          : `<img src="${escapeHtml(session.apiBase+g.src)}" class="thumb" alt="${escapeHtml(g.title)}">`}
+          ? `<video src="${escapeHtml(g.src.startsWith('https://firebasestorage.googleapis.com/') ? g.src : session.apiBase+g.src)}" class="thumb" controls></video>`
+          : `<img src="${escapeHtml(g.src.startsWith('https://firebasestorage.googleapis.com/') ? g.src : session.apiBase+g.src)}" class="thumb" alt="${escapeHtml(g.title)}">`}
         <p style="font-size:12.5px; margin:8px 0 2px;">${escapeHtml(g.title)}</p>
         <p style="font-size:11px; color:var(--ink2); margin:0 0 8px;">${escapeHtml(g.category||'')}</p>
         <button class="action btn-reject" onclick="deleteGalleryItem('${escapeHtml(g.id)}')">Delete</button>

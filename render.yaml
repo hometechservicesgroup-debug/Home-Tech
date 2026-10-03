@@ -13,13 +13,27 @@ services:
         value: production
       - key: DATABASE_URL
         sync: false
-      - key: MSG91_AUTH_KEY
+      - key: FIREBASE_API_KEY
         sync: false
-      - key: MSG91_WIDGET_ID
+      - key: FIREBASE_AUTH_DOMAIN
         sync: false
-      - key: RAZORPAY_KEY_ID
+      - key: FIREBASE_PROJECT_ID
         sync: false
-      - key: RAZORPAY_KEY_SECRET
+      - key: FIREBASE_APP_ID
+        sync: false
+      - key: FIREBASE_STORAGE_BUCKET
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: PHONEPE_ENV
+        value: sandbox
+      - key: PHONEPE_CLIENT_ID
+        sync: false
+      - key: PHONEPE_CLIENT_VERSION
+        sync: false
+      - key: PHONEPE_CLIENT_SECRET
+        sync: false
+      - key: PUBLIC_SITE_URL
         sync: false
       - key: ADMIN_USERNAME
         sync: false

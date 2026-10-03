@@ -1,23 +1,19 @@
-# Backend setup
+# Home-Tech backend
+
+The backend uses the existing PostgreSQL database, Firebase Phone Authentication and Google sign-in, Firebase Storage for new media, and PhonePe for customer booking payments and partner wallet recharge.
 
 ## Local development
 
-1. Copy `.env.example` to `.env` and set your existing PostgreSQL connection in `DATABASE_URL`.
-2. Set the Twilio Verify variables required for OTP. Razorpay variables are optional until online payment is enabled.
-3. Set `ALLOWED_ORIGIN` to the local storefront origin, for example `http://localhost:5500`.
-4. From this directory, run `npm ci`, `npm run migrate`, then `npm start`.
-5. Open the storefront at `http://localhost:4000/`, the admin dashboard at `http://localhost:4000/admin.html`, and the partner dashboard at `http://localhost:4000/partner.html`. If port 4000 is busy, start with `PORT=51283 npm start` (PowerShell: `$env:PORT='51283'; npm start`) and use port `51283` in these URLs.
-6. The admin bookings tab shows the full service list and bill breakdown, the customer location captured at booking, and the partner's latest shared location. Booking data refreshes every 10 seconds. A partner must use the Partner Dashboard's **Start Sharing Location** control while on the assigned job and allow the browser's location permission. The customer location is a booking-time pin; the partner location is live.
+1. Copy `.env.example` to `.env` and set the existing PostgreSQL connection in `DATABASE_URL`.
+2. Add the Firebase Web App settings and Firebase Admin service account values. Set PhonePe sandbox credentials only if you have them.
+3. Set `ALLOWED_ORIGIN` to your local website origin, such as `http://localhost:5500`, and set `PUBLIC_SITE_URL` to a reachable return URL.
+4. Run `npm ci`, `npm run migrate`, then `npm start`.
+5. Open the storefront at `http://localhost:4000/`, admin at `/admin.html`, and partner at `/partner.html`.
 
-To import the existing JSON records without deleting the source files, run `npm run migrate:json` after the schema migration. The import is insert-only and can be rerun; review its summary and resolve any records reported without a matching account before considering the import complete. Do not remove the JSON files until their imported counts and relationships are verified.
+The customer phone must be verified with Firebase OTP before registration. Google login is for existing accounts with a matching verified Google email. Customer and partner bookings retain server-side ownership and price validation.
 
-## Render Web Service
+## Production
 
-Deploy this `backend/` directory as the Node web service. Use `npm ci` as the build command and `npm start` as the start command. The server binds to Render's `PORT` on `0.0.0.0`, serves the existing HTML files, and connects through `DATABASE_URL`.
+Render hosts this service. Keep the existing PostgreSQL connection; migrations are additive. Set all Firebase, PhonePe, CORS and admin environment variables in Render. Never put Firebase service account JSON or PhonePe client secret into a public HTML file, Netlify variable, or chat. Real SMS depends on Firebase Phone Authentication setup, billing, region policy, quota and authorized domains. PhonePe production checkout requires PhonePe merchant approval and production PG credentials after UAT.
 
-Set `NODE_ENV=production`, the existing PostgreSQL database's Render connection URL, `ALLOWED_ORIGIN` to the exact website origin, Twilio Verify credentials, and the admin bootstrap credentials if the database does not yet have an admin. Set Razorpay credentials only when online payments are configured. Never put server secrets in HTML or a static-site environment exposed to browsers.
-For real Razorpay payments, set the live `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` only in the backend `.env` locally and in the Render web service's environment variables in production. The backend sends only the public Key ID to Checkout, and production rejects test Key IDs.
-
-Run `npm run migrate` against the existing PostgreSQL database before deploying code that depends on a new migration. This service configuration does not create a database.
-
-Render's local filesystem is ephemeral. If admin uploads must survive deploys, attach a persistent disk and set `UPLOADS_DIR` to its mount path (for example `/var/data/uploads`). If the storefront or dashboards are deployed separately from this Node service, set each page's `<meta name="api-base" content="https://your-render-web-service.onrender.com">` to the public backend origin and include the page origin in `ALLOWED_ORIGIN`.
+New uploads use Firebase Storage when configured; each file is limited to 50 MB. The Firebase bucket is not unlimited free storage and may incur storage or download charges. Existing `/uploads` files use the local Render filesystem and need migration to durable storage.
