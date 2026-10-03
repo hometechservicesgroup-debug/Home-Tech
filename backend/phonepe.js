@@ -16,6 +16,13 @@ function getPhonePeConfig(environment = process.env) {
   return { mode, clientId, clientSecret, clientVersion, baseUrl, tokenUrl };
 }
 
+function isPhonePePaymentsEnabled(config, environment = process.env) {
+  if (!config) return false;
+  // A deployed production service must never present a sandbox checkout as real payment.
+  if (String(environment.NODE_ENV || '').trim().toLowerCase() === 'production') return config.mode === 'production';
+  return true;
+}
+
 async function phonePeRequest(config, url, options, fetchImpl = fetch) {
   const response = await fetchImpl(url, options);
   let payload;
@@ -72,4 +79,4 @@ function newPhonePeOrderId() {
   return `HTP-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
 }
 
-module.exports = { getPhonePeConfig, getPhonePeAccessToken, createPhonePePayment, getPhonePeOrderStatus, newPhonePeOrderId };
+module.exports = { getPhonePeConfig, isPhonePePaymentsEnabled, getPhonePeAccessToken, createPhonePePayment, getPhonePeOrderStatus, newPhonePeOrderId };

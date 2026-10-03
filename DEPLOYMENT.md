@@ -20,7 +20,7 @@ Set these in Render → `hometech-api` → Environment. Never put service secret
 | `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`, `FIREBASE_APP_ID` | Firebase Web App settings. The web API key is a client config value; the other server values stay on Render. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Full Firebase service account JSON. Secret; Render only. |
 | `FIREBASE_STORAGE_BUCKET` | Exact bucket name from Firebase Console → Storage. |
-| `PHONEPE_ENV` | `sandbox` while testing; use `production` only after PhonePe provides production PG credentials and approves UAT. |
+| `PHONEPE_ENV` | `sandbox` for local testing. On the live Render service set `production` only after PhonePe provides production PG credentials and approves UAT. The live API intentionally disables sandbox checkout. |
 | `PHONEPE_CLIENT_ID`, `PHONEPE_CLIENT_VERSION`, `PHONEPE_CLIENT_SECRET` | PhonePe PG credentials. Keep the secret on Render only. |
 | `PUBLIC_SITE_URL` | Exact HTTPS Netlify site URL, such as `https://your-site.netlify.app`. |
 | `ALLOWED_ORIGIN` | Same Netlify origin without a trailing slash. |
@@ -35,7 +35,7 @@ PhonePe production access requires a merchant account, UAT and PhonePe approval.
 1. In Firebase Console → Authentication → Sign-in method, enable **Phone** and **Google**.
 2. In Authentication settings → Authorized domains, add the exact Netlify hostname. Add `localhost` only for local testing. Confirm India is allowed under the phone SMS region policy.
 3. Real Firebase phone SMS requires the project to meet Firebase billing, quota and region requirements. Google sign-in does not send phone OTPs. Google login only works for an existing Home-Tech account whose email matches the verified Google email; new accounts still register with phone OTP.
-4. Create or select the Firebase Storage bucket and a service account with the required storage access. Put the full service account JSON and bucket name in Render. Firebase Storage is not unlimited free storage; billing and usage charges may apply, especially for video and downloads. Review [Firebase plans](https://firebase.google.com/docs/projects/billing/firebase-pricing-plans) and [Storage pricing](https://firebase.google.com/pricing).
+4. Create or select the Firebase Storage bucket and a service account with the required storage access. Put the full service account JSON and bucket name in Render. Admin service photos, gallery photos/videos, site logo, and partner application photos upload to that bucket. Each current upload is capped at 50 MB. Firebase Storage is not unlimited free storage; current Firebase setup requires the Blaze plan and usage charges may apply, especially for video and downloads. Review [Firebase plans](https://firebase.google.com/docs/projects/billing/firebase-pricing-plans) and [Storage pricing](https://firebase.google.com/pricing).
 5. After deploying, `/health` should show `otpEnabled: true`, `otpProvider: "firebase"`, and `cloudStorageEnabled: true`.
 
 If phone OTP fails, the on-page message identifies common causes. Also inspect Firebase Authentication usage/quota, SMS region policy, billing, reCAPTCHA, and whether the current Netlify domain is authorized. Firebase test phone numbers do not send actual SMS.

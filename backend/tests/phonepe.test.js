@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getPhonePeConfig, getPhonePeAccessToken, createPhonePePayment, getPhonePeOrderStatus } = require('../phonepe');
+const { getPhonePeConfig, isPhonePePaymentsEnabled, getPhonePeAccessToken, createPhonePePayment, getPhonePeOrderStatus } = require('../phonepe');
 
 const secrets = { PHONEPE_CLIENT_ID: 'pg-client-id', PHONEPE_CLIENT_SECRET: 'pg-client-secret', PHONEPE_CLIENT_VERSION: '1', PHONEPE_ENV: 'sandbox' };
 
@@ -12,6 +12,15 @@ test('PhonePe is disabled until credentials are configured and uses explicit san
   assert.equal(live.baseUrl, 'https://api.phonepe.com/apis/pg');
   assert.equal(live.tokenUrl, 'https://api.phonepe.com/apis/identity-manager');
   assert.equal(getPhonePeConfig({ ...secrets, PHONEPE_ENV: 'prod' }), null);
+});
+
+test('production servers reject sandbox PhonePe credentials for customer payments', () => {
+  const sandbox = getPhonePeConfig(secrets);
+  const production = getPhonePeConfig({ ...secrets, PHONEPE_ENV: 'production' });
+  assert.equal(isPhonePePaymentsEnabled(sandbox, { NODE_ENV: 'production' }), false);
+  assert.equal(isPhonePePaymentsEnabled(production, { NODE_ENV: 'production' }), true);
+  assert.equal(isPhonePePaymentsEnabled(sandbox, { NODE_ENV: 'development' }), true);
+  assert.equal(isPhonePePaymentsEnabled(null, { NODE_ENV: 'development' }), false);
 });
 
 test('PhonePe OAuth token and payment initiation use server credentials and paise amount', async () => {

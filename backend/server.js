@@ -11,7 +11,7 @@ const { Pool } = require('pg');
 const SERVICE_OPTIONS = require('./data/service-options');
 const { getFirebaseClientConfig, initializeFirebaseAdmin, initializeFirebaseAdminApp, verifyFirebasePhoneToken, verifyFirebaseGoogleToken } = require('./firebase-auth');
 const { createFirebaseStorage } = require('./firebase-storage');
-const { getPhonePeConfig, createPhonePePayment, getPhonePeOrderStatus, newPhonePeOrderId } = require('./phonepe');
+const { getPhonePeConfig, isPhonePePaymentsEnabled, createPhonePePayment, getPhonePeOrderStatus, newPhonePeOrderId } = require('./phonepe');
 
 const {
   DATABASE_URL,
@@ -40,7 +40,7 @@ if (firebaseStorageApp && process.env.FIREBASE_STORAGE_BUCKET) {
 
 const phonePeConfig = getPhonePeConfig(process.env);
 const paymentProvider = 'phonepe';
-const paymentsEnabled = Boolean(phonePeConfig);
+const paymentsEnabled = isPhonePePaymentsEnabled(phonePeConfig, process.env);
 const paymentMode = phonePeConfig ? phonePeConfig.mode : 'off';
 if (!paymentsEnabled) {
   console.warn('PhonePe payment gateway is selected but its credentials are not configured.');
