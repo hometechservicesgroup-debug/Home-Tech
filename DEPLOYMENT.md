@@ -12,7 +12,7 @@ This package keeps the existing Git history, including the `Initial stable versi
 ## One-time prerequisites
 
 1. Create an empty GitHub repository and push this package to it (instructions below).
-2. Keep access to the existing PostgreSQL connection string and Twilio Verify credentials from the existing backend `.env`. Do not paste secrets into chat or commit `.env`.
+2. Keep access to the existing PostgreSQL connection string. Create an MSG91 account and an OTP Widget with mobile and email channels. Do not paste secrets into chat or commit `.env`.
 3. Have the Razorpay **Key ID and Key Secret pair from the same mode** (test keys for test payments, live keys for live payments). Never put the secret in Netlify or frontend code.
 4. Choose the final Netlify site address first, so it can be entered as Render's `ALLOWED_ORIGIN`.
 
@@ -37,9 +37,8 @@ In Render, choose **New → Blueprint**, select the GitHub repository you just p
 | Render variable | Value |
 |---|---|
 | `DATABASE_URL` | Existing PostgreSQL connection string (keep the same database) |
-| `TWILIO_ACCOUNT_SID` | Existing Twilio Account SID |
-| `TWILIO_AUTH_TOKEN` | Twilio Auth Token |
-| `TWILIO_VERIFY_SERVICE_SID` | Twilio Verify Service SID |
+| `MSG91_AUTH_KEY` | MSG91 API Auth Key; keep it only on Render/backend |
+| `MSG91_WIDGET_ID` | ID of the MSG91 OTP Widget configured for phone and email |
 | `RAZORPAY_KEY_ID` | Razorpay Key ID for the chosen test/live mode |
 | `RAZORPAY_KEY_SECRET` | Matching secret; server-side only |
 | `RAZORPAY_ALLOW_TEST_KEYS` | Set to `true` only to temporarily test Razorpay test keys on the Render production service; remove/set `false` for live payment mode |
@@ -87,6 +86,15 @@ Useful live URLs after deployment:
 
 For a hosted test checkout, set `RAZORPAY_ALLOW_TEST_KEYS=true` on Render with the matching Razorpay test key pair. `/health` then reports `paymentMode: "test"`; test mode cannot collect real money and the checkout labels it as a test payment. Before collecting real payments, replace both keys with the matching live pair and remove/set `RAZORPAY_ALLOW_TEST_KEYS=false`. Payment completion is confirmed by the server after it verifies Razorpay's signature against the authenticated booking and database quote.
 
-Twilio trial restrictions still apply: SMS recipients must be verified in Twilio, and trial email is restricted to the account sign-up email. Email OTP also requires a SendGrid email integration connected to the same Verify Service, with a verified sender and active template. Check the Render service logs for the Twilio error code when a delivery fails; do not share environment variable values.
+## 4. Set up MSG91 OTP (SMS and email)
+
+1. Create/sign in to an account at [MSG91](https://msg91.com/signup) and complete the requested account verification.
+2. In the MSG91 dashboard, open **OTP Widget** and create a widget. Enable both **mobile number** and **email**, configure the OTP expiry, length, and templates, then copy the **Widget ID**.
+3. For Indian SMS delivery, complete MSG91's DLT setup: business/entity registration, sender header, and approval of the OTP message template. Delivery depends on account approval and available balance/plan.
+4. Configure the widget's email channel and sender/domain settings in MSG91. Test an email from the MSG91 dashboard.
+5. In Render → `hometech-api` → **Environment**, add `MSG91_AUTH_KEY` (server API Auth Key) and `MSG91_WIDGET_ID` (widget ID). Save and redeploy. Never enter the Auth Key in Netlify or website code.
+6. Open `https://YOUR-RENDER-SERVICE.onrender.com/health`. It should show `otpEnabled: true` and `otpProvider: "msg91"`. Test a phone and email you control through sign-up.
+
+The app uses MSG91 for OTP after this code is deployed. MSG91's OTP Widget supports phone and email and requires a configured Widget ID and request ID for verification; see [MSG91 OTP Widget documentation](https://docs.msg91.com/otp-widget).
 
 Platform references: [Render Blueprint configuration](https://render.com/docs/blueprint-spec), [Render deployment guide](https://render.com/docs/your-first-deploy), [Netlify CLI](https://docs.netlify.com/api-and-cli-guides/cli-guides/get-started-with-cli/), [Netlify environment variables](https://docs.netlify.com/build/environment-variables/get-started/).

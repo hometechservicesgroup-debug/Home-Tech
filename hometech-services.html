@@ -1454,9 +1454,9 @@ const OTP_API_BASE = (window.HOMETakeApiBase || (API_BASE_META && API_BASE_META.
 /* Razorpay Key ID is safe to expose in frontend code (it's public by design) — NEVER put the Key Secret here. */
 const RAZORPAY_KEY_ID = '';
 
-let authState = { role:'customer', step:'choose', channel:'sms', identifier:'', verifyToken:'' };
+let authState = { role:'customer', step:'choose', channel:'sms', identifier:'', verifyToken:'', challengeToken:'' };
 
-function resetAuthState(){ authState = { role:'customer', step:'choose', channel:'sms', identifier:'', verifyToken:'' }; }
+function resetAuthState(){ authState = { role:'customer', step:'choose', channel:'sms', identifier:'', verifyToken:'', challengeToken:'' }; }
 
 /* ---- LOGIN (email + password) ---- */
 function renderLoginView(){
@@ -1584,6 +1584,8 @@ async function sendOtp(purpose, isResend){
     });
     const data = await res.json();
     if(!res.ok){ authErr(data.error || 'Could not send OTP. Please try again.'); if(btn){ btn.textContent = isResend?'Resend OTP':'Send OTP'; btn.disabled=false; } return; }
+    authState.challengeToken = data.challengeToken || '';
+    if(!authState.challengeToken){ authErr('OTP service did not return a valid request. Please try again.'); if(btn){ btn.textContent = isResend?'Resend OTP':'Send OTP'; btn.disabled=false; } return; }
     authState.step = 'otp';
     go(purpose==='forgot' ? 'forgot' : 'signup');
   } catch(e){
@@ -1597,7 +1599,7 @@ async function verifyOtp(purpose){
   try{
     const res = await fetch(`${OTP_API_BASE}/api/verify-otp`, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ identifier: authState.identifier, code })
+      body: JSON.stringify({ identifier: authState.identifier, code, challengeToken: authState.challengeToken })
     });
     const data = await res.json();
     if(!res.ok || !data.success){ authErr(data.error || 'Incorrect or expired OTP.'); return; }

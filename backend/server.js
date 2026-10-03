@@ -2,7 +2,6 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
-const twilio = require('twilio');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -11,12 +10,12 @@ const multer = require('multer');
 const { Pool } = require('pg');
 const SERVICE_OPTIONS = require('./data/service-options');
 const { isRazorpayConfigured, getRazorpayMode, verifyRazorpaySignature } = require('./payment-config');
+const { normalizeIdentifier, makeChallengeToken, readChallengeToken, sendOtp: sendMsg91Otp, verifyOtp: verifyMsg91Otp } = require('./msg91-otp');
 
 const {
   DATABASE_URL,
-  TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN,
-  TWILIO_VERIFY_SERVICE_SID,
+  MSG91_AUTH_KEY,
+  MSG91_WIDGET_ID,
   RAZORPAY_KEY_ID,
   RAZORPAY_KEY_SECRET,
   ADMIN_USERNAME,
@@ -32,10 +31,7 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
-if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_VERIFY_SERVICE_SID) {
-  console.error('Missing Twilio env vars. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_VERIFY_SERVICE_SID.');
-  process.exit(1);
-}
+const otpEnabled = Boolean(MSG91_AUTH_KEY && MSG91_WIDGET_ID);
 
 const paymentsEnabled = isRazorpayConfigured(process.env);
 const paymentMode = getRazorpayMode(process.env);
@@ -76,7 +72,6 @@ app.use(cors({
   credentials: true
 }));
 
-const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 let razorpay = null;
 if (paymentsEnabled) {
   razorpay = new (require('razorpay'))({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
@@ -298,19 +293,12 @@ async function releaseOtpLimit(identifier) {
 }
 
 function otpProviderError(err, phase) {
-  const code = Number(err && err.code);
-  const details = { code: Number.isFinite(code) ? code : undefined, status: err && err.status };
-  console.error(`${phase} Twilio error:`, details);
-  if (code === 60203 || code === 60624) {
-    return { status: 429, message: 'Twilio OTP limit reached. Wait before trying again.' };
+  const code = err && err.providerCode;
+  console.error(`MSG91 ${phase} error:`, { code: code ? String(code).slice(0, 80) : undefined });
+  if (String(code) === '429' || String(code) === '201') {
+    return { status: 429, message: 'MSG91 OTP limit reached or the request was blocked. Check MSG91 widget limits and account status.' };
   }
-  if ([60217, 60218, 60219, 60222, 60223, 60228, 60603, 60604].includes(code)) {
-    return { status: 502, message: 'Email OTP setup failed. Check the SendGrid integration, verified sender, and active template on this Twilio Verify service.' };
-  }
-  if (code === 60410 || code === 60412 || code === 60238) {
-    return { status: 400, message: 'Twilio blocked this OTP attempt. Check trial recipient restrictions and Twilio Verify settings.' };
-  }
-  return { status: 502, message: `Twilio could not ${phase === 'send-otp' ? 'send' : 'verify'} the OTP${Number.isFinite(code) ? ` (error ${code})` : ''}. Check Render logs.` };
+  return { status: 502, message: `MSG91 could not ${phase === 'send-otp' ? 'send' : 'verify'} the OTP${code ? ` (error ${String(code).slice(0, 40)})` : ''}. Check MSG91 setup and Render logs.` };
 }
 
 const DEFAULT_SERVICES = [
@@ -470,10 +458,10 @@ app.get('/partner.html', (_req, res) => res.sendFile(path.join(__dirname, 'partn
 app.get('/health', async (_req, res) => {
   try {
     await query('SELECT 1');
-    return res.json({ ok: true, paymentsEnabled, paymentMode, database: 'connected' });
+    return res.json({ ok: true, paymentsEnabled, paymentMode, otpEnabled, otpProvider: 'msg91', database: 'connected' });
   } catch (err) {
     console.error('/health error:', err.message);
-    return res.status(503).json({ ok: false, paymentsEnabled, paymentMode, database: 'disconnected' });
+    return res.status(503).json({ ok: false, paymentsEnabled, paymentMode, otpEnabled, otpProvider: 'msg91', database: 'disconnected' });
   }
 });
 
@@ -489,16 +477,21 @@ app.post('/api/send-otp', async (req, res) => {
     if (channel !== 'sms' && channel !== 'email') {
       return res.status(400).json({ error: 'Channel must be sms or email.' });
     }
+    if (!otpEnabled) {
+      return res.status(503).json({ error: 'MSG91 OTP is not configured yet. Add MSG91_AUTH_KEY and MSG91_WIDGET_ID to the backend environment.' });
+    }
 
-    const limit = await checkAndIncrementOtpLimit(identifier);
+    const normalizedIdentifier = normalizeIdentifier(identifier, channel);
+    identifier = normalizedIdentifier;
+    const limit = await checkAndIncrementOtpLimit(normalizedIdentifier);
     if (!limit.allowed) {
       return res.status(429).json({ error: 'Daily OTP limit reached for this number/email. Please try again tomorrow.' });
     }
     counted = true;
 
-    identifier = identifier.trim();
-    await twilioClient.verify.v2.services(TWILIO_VERIFY_SERVICE_SID).verifications.create({ to: identifier, channel });
-    return res.json({ success: true, remaining: limit.remaining });
+    const challenge = await sendMsg91Otp({ identifier, channel, widgetId: MSG91_WIDGET_ID, authKey: MSG91_AUTH_KEY });
+    const challengeToken = makeChallengeToken(challenge.identifier, challenge.requestId, MSG91_AUTH_KEY);
+    return res.json({ success: true, remaining: limit.remaining, challengeToken });
   } catch (err) {
     if (counted && identifier) {
       try { await releaseOtpLimit(identifier); } catch (limitErr) { console.error('OTP limit release error:', limitErr.message); }
@@ -510,14 +503,19 @@ app.post('/api/send-otp', async (req, res) => {
 
 app.post('/api/verify-otp', async (req, res) => {
   try {
-    const { identifier, code } = req.body || {};
-    if (!identifier || !code) {
-      return res.status(400).json({ error: 'Identifier and code are required.' });
+    const { identifier, code, challengeToken } = req.body || {};
+    if (typeof identifier !== 'string' || typeof code !== 'string' || !identifier.trim() || !/^\d{4,8}$/.test(code) || typeof challengeToken !== 'string') {
+      return res.status(400).json({ error: 'Identifier, valid OTP, and OTP request token are required.' });
     }
+    if (!otpEnabled) {
+      return res.status(503).json({ error: 'MSG91 OTP is not configured yet. Add MSG91_AUTH_KEY and MSG91_WIDGET_ID to the backend environment.' });
+    }
+    const normalizedIdentifier = normalizeIdentifier(identifier, identifier.includes('@') ? 'email' : 'sms');
+    const challenge = readChallengeToken(challengeToken, normalizedIdentifier, MSG91_AUTH_KEY);
+    if (!challenge) return res.status(401).json({ error: 'OTP request expired or invalid. Request a new OTP.' });
 
-    const check = await twilioClient.verify.v2.services(TWILIO_VERIFY_SERVICE_SID).verificationChecks.create({ to: identifier, code });
-    if (check.status === 'approved') {
-      const token = await issueVerifyTicket(identifier);
+    if (await verifyMsg91Otp({ requestId: challenge.requestId, code, widgetId: MSG91_WIDGET_ID, authKey: MSG91_AUTH_KEY })) {
+      const token = await issueVerifyTicket(normalizedIdentifier);
       return res.json({ success: true, verifyToken: token });
     }
     return res.status(401).json({ error: 'Incorrect or expired OTP.' });
