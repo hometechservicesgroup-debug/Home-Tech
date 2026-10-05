@@ -183,6 +183,16 @@
       <p id="brandOk" class="ok"></p>
       <button class="btn-primary" onclick="saveBranding()">Save Branding</button>
     </div>
+    <div class="row-item settings-card" style="margin-top:14px;">
+      <h3 style="margin-bottom:12px;">Customer UPI QR payment</h3>
+      <p class="sub">Upload the QR customers should scan. Payments remain pending until you verify the money reached your account.</p>
+      <label>UPI ID (optional; opens installed payment apps on phones)</label>
+      <input id="paymentUpiId" placeholder="yourname@bank">
+      <label>UPI QR image</label>
+      <input id="paymentQr" type="file" accept="image/png,image/jpeg,image/webp">
+      <p id="paymentErr" class="err"></p><p id="paymentOk" class="ok"></p>
+      <button class="btn-primary" onclick="savePaymentSettings()">Save UPI Payment</button>
+    </div>
   </div>
 
   <div id="pane-account" class="pane">
@@ -317,7 +327,7 @@ function renderBookings(bookings, expandedOrders = new Set()){
         <span class="id">${escapeHtml(b.id)}</span>
       </div>
       <div class="meta">${escapeHtml(b.name || '')} · ${escapeHtml(b.phone || '')} · ${escapeHtml(b.email || '')} · ${escapeHtml(b.address || '')}, ${escapeHtml(b.city || '')} ${escapeHtml(b.pin || '')}<br>
-        ${escapeHtml(b.date || '')} · ${escapeHtml(b.time || '')} · ₹${Number(b.total)||0} · ${b.paymentStatus === 'paid' ? 'Paid Online' : b.paymentStatus === 'refund_pending' ? 'Refund processing' : 'Pay After Service'}
+        ${escapeHtml(b.date || '')} · ${escapeHtml(b.time || '')} · ₹${Number(b.total)||0} · ${b.paymentStatus === 'paid' ? 'Paid' : b.paymentStatus === 'refund_pending' ? 'Refund processing' : b.paymentMethod === 'upi' ? 'UPI payment pending' : 'Pay After Service'}
         ${b.assignedPartner ? `<br>Assigned to: ${escapeHtml(b.assignedPartner)}` : '<br><em>Not yet assigned</em>'}<br>${customerWhatsAppLink(b)}</div>
       <details data-order-booking="${escapeHtml(b.id)}" ${expandedOrders.has(String(b.id)) ? 'open' : ''}><summary>Full order and bill</summary>
         <div class="meta" style="margin-top:10px;">${(b.items||[]).map(item=>`<div>${escapeHtml(item.name)} · ${escapeHtml(item.opt || item.option || 'Service')} · ${Number(item.qty || item.quantity) || 1} × ₹${Number(item.unitPrice || item.price) || 0} = ₹${Number(item.totalPrice) || 0}</div>`).join('') || 'No service items recorded.'}
@@ -328,6 +338,7 @@ function renderBookings(bookings, expandedOrders = new Set()){
       ${renderLocationCard('Customer location', b.customerLocation)}
       ${renderLocationCard('Partner live location', b.location)}
       <div class="row">
+        ${b.paymentMethod === 'upi' && b.paymentStatus === 'pending' && b.status !== 'Cancelled' ? `<button class="action btn-approve" onclick="markBookingPaid('${escapeHtml(b.id)}')">Verify UPI & Mark Paid</button>` : ''}
         <select onchange="updateStatus('${escapeHtml(b.id)}', this.value)">
           ${b.status === 'Cancelled' ? '<option value="Cancelled" selected>Cancelled</option>' : ''}
           ${STATUS_STAGES.map(s => `<option value="${escapeHtml(s)}" ${s === (b.status || 'Requested') ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
@@ -402,6 +413,13 @@ async function updateStatus(id, status){
     const data = await res.json();
     if(!res.ok) throw new Error(data.error);
   } catch(e){ alert('Error: ' + e.message); }
+}
+async function markBookingPaid(id){
+  if(!confirm('Confirm the payment is visible in the business bank/UPI account?'))return;
+  try{
+    const res=await fetch(`${session.apiBase}/api/admin/bookings/${encodeURIComponent(id)}/mark-paid`,{method:'PATCH',headers:authHeaders(true),body:JSON.stringify({})});
+    const data=await res.json();if(!res.ok)throw new Error(data.error||'Could not confirm payment.');loadAll();
+  }catch(error){alert('Error: '+error.message);}
 }
 async function assignPartner(id){
   const partnerEmail = document.getElementById(`assign-${id}`).value;
@@ -637,7 +655,21 @@ async function loadBranding(){
     const settings = await res.json();
     if(!res.ok) throw new Error(settings.error || 'Could not load settings.');
     document.getElementById('brandName').value = settings.siteName || '';
+    const paymentRes = await fetch(`${session.apiBase}/api/payment-settings`);
+    const paymentSettings = await paymentRes.json();
+    if(paymentRes.ok) document.getElementById('paymentUpiId').value = paymentSettings.upiId || '';
   } catch(e){ errEl.textContent = e.message; errEl.style.display='block'; }
+}
+async function savePaymentSettings(){
+  const errEl=document.getElementById('paymentErr'), okEl=document.getElementById('paymentOk');
+  errEl.style.display='none';okEl.style.display='none';
+  const form=new FormData();form.append('upiId',document.getElementById('paymentUpiId').value.trim());
+  const file=document.getElementById('paymentQr').files[0];if(file)form.append('qr',file);
+  try{
+    const res=await fetch(`${session.apiBase}/api/admin/payment-settings`,{method:'POST',headers:{'x-admin-token':session.token},body:form});
+    const data=await res.json();if(!res.ok)throw new Error(data.error||'Could not save UPI payment settings.');
+    document.getElementById('paymentQr').value='';okEl.textContent='UPI payment details saved.';okEl.style.display='block';
+  }catch(error){errEl.textContent=error.message;errEl.style.display='block';}
 }
 async function saveBranding(){
   const siteName = document.getElementById('brandName').value.trim();

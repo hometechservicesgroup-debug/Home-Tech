@@ -806,7 +806,7 @@ async function cancelCustomerBooking(bookingId){
   if(!booking) return;
   const paid = booking.paymentStatus === 'paid';
   const promptText = paid
-    ? 'Cancel this booking? Your online payment will be marked for refund processing. Please contact support to complete the refund.'
+    ? 'Cancel this booking? Your payment will be marked for refund processing. Please contact support to complete the refund.'
     : 'Cancel this booking? This cannot be undone.';
   if(!confirm(promptText)) return;
   try{
@@ -1348,7 +1348,7 @@ function renderBookingView(){
       <div class="grid grid-cols-2 gap-3 mb-6">
         <button data-method="online" onclick="setPaymentMethod('online')" class="pay-method-btn pick px-4 py-3.5 rounded-xl border border-[var(--line)] text-left">
           <span class="text-white text-[13.5px] font-medium block mb-0.5">Pay Online</span>
-          <span class="text-[11.5px] text-[var(--ink-2)]">Card / UPI / Netbanking</span>
+          <span class="text-[11.5px] text-[var(--ink-2)]">Scan QR or open a UPI app</span>
         </button>
         <button data-method="cod" onclick="setPaymentMethod('cod')" class="pay-method-btn pick selected px-4 py-3.5 rounded-xl border border-[var(--line)] text-left">
           <span class="text-white text-[13.5px] font-medium block mb-0.5">Pay After Service</span>
@@ -1411,6 +1411,7 @@ function confirmBooking(){
   }
 }
 async function finalizeBooking(details, paymentMethod, payment={}){
+  const paymentSettings=payment.paymentSettings||null;
   const { bookingId, name, phone, email, house, street, city, pin, date, time } = details;
   const c = getCart();
   const errorEl = document.getElementById('bookingError');
@@ -1447,7 +1448,7 @@ async function finalizeBooking(details, paymentMethod, payment={}){
       `Services: ${(record.items || []).map(item=>`${item.name} (${item.opt || 'Service'})${item.qty>1?' x'+item.qty:''}`).join(', ')}`,
       `Address: ${record.address || '-'}`, `City: ${record.city || '-'}`, `PIN: ${record.pin || '-'}`,
       `Date: ${formatDate(record.date)}`, `Time: ${record.time || '-'}`,
-      `Payment: ${record.paymentStatus==='paid' ? 'PAID ONLINE' : 'Pay After Service'}`,
+      `Payment: ${record.paymentMethod==='upi' ? 'UPI — pending manual verification' : record.paymentStatus==='paid' ? 'PAID' : 'Pay After Service'}`,
       `Total: ₹${record.total}`,
       record.customer_latitude != null && record.customer_longitude != null
         ? `Location: https://www.google.com/maps?q=${record.customer_latitude},${record.customer_longitude}` : ''
@@ -1463,8 +1464,9 @@ async function finalizeBooking(details, paymentMethod, payment={}){
         <div class="flex justify-between"><span class="text-[var(--ink-2)]">Booking ID</span><span class="text-white">${escapeHtml(record.id)}</span></div>
         <div class="flex justify-between"><span class="text-[var(--ink-2)]">Date</span><span class="text-white">${escapeHtml(formatDate(record.date))}</span></div>
         <div class="flex justify-between"><span class="text-[var(--ink-2)]">Time</span><span class="text-white">${escapeHtml(record.time || '')}</span></div>
-        <div class="flex justify-between"><span class="text-[var(--ink-2)]">Payment</span><span class="text-white">${record.paymentStatus==='paid'?'Paid Online':'Pay After Service'}</span></div>
+        <div class="flex justify-between"><span class="text-[var(--ink-2)]">Payment</span><span class="text-white">${record.paymentMethod==='upi'?'UPI · Pending verification':record.paymentStatus==='paid'?'Paid':'Pay After Service'}</span></div>
       </div>
+      ${paymentSettings ? `<div class="glass rounded-2xl p-4 mb-5"><p class="text-white font-medium mb-2">Pay ₹${Number(record.total).toFixed(2)} using any UPI app</p><img src="${escapeHtml(paymentSettings.qrUrl)}" alt="Home-Tech UPI QR code" class="mx-auto rounded-xl bg-white p-2" style="width:220px;height:220px;object-fit:contain"><p class="text-[12px] text-[var(--ink-2)] mt-2">Scan this QR with any UPI app. Make sure the amount matches.</p>${paymentSettings.upiId?`<p class="text-white text-[13px] mt-2">UPI ID: ${escapeHtml(paymentSettings.upiId)} <button class="action btn-approve" onclick="navigator.clipboard.writeText('${escapeHtml(paymentSettings.upiId)}')">Copy</button></p><a href="upi://pay?pa=${encodeURIComponent(paymentSettings.upiId)}&pn=Home-Tech&am=${encodeURIComponent(Number(record.total).toFixed(2))}&cu=INR&tn=${encodeURIComponent('Booking '+record.id)}" class="block mt-3 py-3 rounded-full btn-primary text-center text-white">Open UPI app</a>`:''}<p class="text-[11px] text-amber-300 mt-3">Booking/payment stays pending until Home-Tech verifies the transfer. Please do not pay twice.</p></div>` : ''}
       <div class="flex flex-col gap-2.5">
         <a href="${whatsappUrl}" target="_blank" rel="noopener" class="w-full py-3.5 rounded-full btn-primary text-white text-[14px] font-medium">Share Booking on WhatsApp</a>
         <button onclick="closeModal(); go('home');" class="w-full py-3.5 rounded-full btn-ghost text-white text-[14px] font-medium">Back to Home</button>
@@ -1900,7 +1902,7 @@ function renderAccountView(anchor){
         ${bookings.map(b=>`
         <div class="glass rounded-2xl p-4">
           <div class="flex justify-between items-start mb-2"><h4 class="text-white text-[14px] font-medium">${b.items.map(i=>escapeHtml(i.name)).join(', ')}</h4><span class="text-[11px] text-[var(--ink-2)]">${escapeHtml(b.id)}</span></div>
-          <p class="text-[12.5px] text-[var(--ink-2)] mb-3">${escapeHtml(formatDate(b.date))}, ${escapeHtml(b.time || '')} · ₹${Number(b.total)||0} · ${b.paymentStatus==='paid'?'Paid Online':b.paymentStatus==='refund_pending'?'Refund processing':'Pay After Service'}</p>
+          <p class="text-[12.5px] text-[var(--ink-2)] mb-3">${escapeHtml(formatDate(b.date))}, ${escapeHtml(b.time || '')} · ₹${Number(b.total)||0} · ${b.paymentStatus==='paid'?'Paid':b.paymentStatus==='refund_pending'?'Refund processing':b.paymentMethod==='upi'?'UPI payment pending':'Pay After Service'}</p>
           <div class="mb-3">${statusStepper(b.status||'Requested')}</div>
           <div class="flex items-center gap-4">
             <button onclick="openTracking(${inlineArg(b.id)})" class="text-[12.5px] text-[var(--indigo-0)] hover:underline">Track this service →</button>
@@ -2155,7 +2157,7 @@ function initTrackingMap(){
   }, 8000);
 }
 
-/* ============ PAYMENTS (PhonePe) ============ */
+/* ============ PAYMENTS (UPI QR) ============ */
 let selectedPaymentMethod = 'cod'; // 'cod' | 'online'
 function setPaymentMethod(m){
   selectedPaymentMethod = m;
@@ -2164,56 +2166,16 @@ function setPaymentMethod(m){
 async function payOnlineThenBook(bookingDetails){
   const err = document.getElementById('bookingError');
   try{
-    const orderRes = await fetch(`${OTP_API_BASE}/api/create-order`, {
-      method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()},
-      body: JSON.stringify({
-        bookingId:bookingDetails.bookingId,
-        items:getCart().map(item=>({ id:item.id, opt:item.opt, qty:item.qty, price:item.price })),
-        coupon:getAppliedCoupon()
-      })
-    });
-    const order = await orderRes.json();
-    if(!orderRes.ok) throw new Error(order.error || 'Could not create payment order.');
-    if(order.provider!=='phonepe'||!order.redirectUrl) throw new Error(order.error || 'PhonePe checkout is not configured on the server yet.');
-    sessionStorage.setItem('ht_phonepe_pending_booking',JSON.stringify({details:bookingDetails,cart:getCart(),location:bookingCtx.locationStatus==='granted'?{status:'granted',lat:bookingCtx.lat,lng:bookingCtx.lng}:{status:'denied'}}));
-    location.assign(order.redirectUrl);
+    const settingsRes=await fetch(`${OTP_API_BASE}/api/payment-settings`);
+    const paymentSettings=await settingsRes.json();
+    if(!settingsRes.ok)throw new Error(paymentSettings.error||'Could not load UPI payment details.');
+    if(!/^https:\/\//i.test(paymentSettings.qrUrl||''))throw new Error('Online UPI payment is not set up yet. Please contact Home-Tech or choose Pay After Service.');
+    await finalizeBooking(bookingDetails,'upi',{paymentSettings});
   } catch(e){
     err.textContent = e.message || 'Online payment is not available right now — please choose Pay After Service, or contact us on WhatsApp.';
     err.classList.remove('hidden');
   }
 }
-
-async function handlePhonePeReturn(){
-  const params=new URLSearchParams(location.search);
-  if(params.get('payment')!=='phonepe-return') return;
-  const orderId=params.get('orderId')||'';
-  const pendingRaw=sessionStorage.getItem('ht_phonepe_pending_booking');
-  const err=document.getElementById('bookingError');
-  try{
-    if(!/^[A-Za-z0-9_-]{1,63}$/.test(orderId)) throw new Error('PhonePe return order ID is invalid.');
-    if(!getSession()) throw new Error('Please log in again, then retry payment confirmation.');
-    if(!pendingRaw) throw new Error('Booking details were not found on this browser. Please contact support before paying again.');
-    const pending=JSON.parse(pendingRaw);
-    const verifyRes=await fetch(`${OTP_API_BASE}/api/verify-phonepe-payment`,{method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:JSON.stringify({orderId})});
-    const verify=await verifyRes.json();
-    if(!verifyRes.ok||!verify.success) throw new Error(verify.error||'PhonePe payment is not confirmed yet.');
-    if(!pending.details||!pending.cart) throw new Error('Saved booking details are incomplete. Please contact support.');
-    setCart(pending.cart);
-    bookingCtx.locationStatus=pending.location&&pending.location.status||'denied';
-    bookingCtx.lat=pending.location&&pending.location.lat||null;
-    bookingCtx.lng=pending.location&&pending.location.lng||null;
-    const booked=await finalizeBooking(pending.details,'online',{orderId:verify.orderId,paymentId:verify.paymentId});
-    if(booked){
-      sessionStorage.removeItem('ht_phonepe_pending_booking');
-      params.delete('payment');params.delete('orderId');
-      history.replaceState({},document.title,location.pathname+(params.toString()?'?'+params.toString():'')+location.hash);
-    }
-  }catch(error){
-    if(err){err.textContent=error.message||'Could not confirm PhonePe payment.';err.classList.remove('hidden');}
-    go('booking');
-  }
-}
-window.addEventListener('load',()=>{handlePhonePeReturn();});
 
 /* ============ MODAL ============ */
 function showModal(html){

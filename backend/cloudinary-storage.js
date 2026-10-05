@@ -10,7 +10,7 @@ function getCloudinaryConfig(environment = process.env) {
 
 function signParameters(parameters, apiSecret) {
   const canonical = Object.keys(parameters).sort().map((key) => `${key}=${parameters[key]}`).join('&');
-  return crypto.createHash('sha1').update(canonical + apiSecret).digest('hex');
+  return crypto.createHash('sha256').update(canonical + apiSecret).digest('hex');
 }
 
 function getPublicIdFromUrl(url, cloudName) {
@@ -47,18 +47,19 @@ function createCloudinaryStorage(config) {
       const uploadFolder = String(folder || 'hometech').replace(/[^a-z0-9/_-]/gi, '');
       const form = new FormData();
       form.append('file', new Blob([file.buffer], { type: file.mimetype }), file.originalname || 'upload');
-      form.append('api_key', config.apiKey);
       form.append('timestamp', String(timestamp));
       form.append('folder', uploadFolder);
-      form.append('signature', signParameters({ folder: uploadFolder, timestamp }, config.apiSecret));
 
       const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloudName)}/${resourceType}/upload`, {
         method: 'POST',
+        headers: { Authorization: `Basic ${Buffer.from(`${config.apiKey}:${config.apiSecret}`).toString('base64')}` },
         body: form
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.secure_url || !result.public_id) {
-        throw new Error(result.error?.message || `Cloudinary upload failed (HTTP ${response.status}).`);
+        const error = new Error(result.error?.message || `Cloudinary upload failed (HTTP ${response.status}).`);
+        error.statusCode = response.status;
+        throw error;
       }
       return { objectPath: result.public_id, url: result.secure_url };
     },

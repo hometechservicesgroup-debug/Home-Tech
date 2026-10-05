@@ -11,7 +11,6 @@ const { Pool } = require('pg');
 const SERVICE_OPTIONS = require('./data/service-options');
 const { getFirebaseClientConfig, initializeFirebaseAdmin, verifyFirebasePhoneIdentity, verifyFirebaseGoogleToken } = require('./firebase-auth');
 const { getCloudinaryConfig, createCloudinaryStorage } = require('./cloudinary-storage');
-const { getPhonePeConfig, isPhonePePaymentsEnabled, createPhonePePayment, getPhonePeOrderStatus, newPhonePeOrderId } = require('./phonepe');
 const { DEFAULT_PRICING_CONFIG, validatePricingConfig, calculateCommission } = require('./pricing-config');
 
 const {
@@ -33,12 +32,23 @@ const firebaseClientConfig = getFirebaseClientConfig(process.env);
 let firebaseAuth = null;
 let mediaStorage = null;
 let firebaseConfigStatus = 'missing';
+let firebaseConfigIssue = null;
 try {
   firebaseAuth = initializeFirebaseAdmin(process.env);
   firebaseConfigStatus = firebaseAuth ? 'ready' : 'missing';
 } catch (err) {
   firebaseAuth = null;
   firebaseConfigStatus = 'invalid';
+  const firebaseMessage = String(err.message || '').toLowerCase();
+  firebaseConfigIssue = firebaseMessage.includes('must be a valid base64')
+    ? 'service_account_base64_invalid'
+    : firebaseMessage.includes('must contain valid firebase service account json')
+      ? 'service_account_json_invalid'
+      : firebaseMessage.includes('project or credentials do not match')
+        ? 'service_account_project_mismatch'
+        : firebaseMessage.includes('private key') || firebaseMessage.includes('pem')
+          ? 'service_account_private_key_invalid'
+          : 'firebase_admin_initialization_failed';
   console.error('Firebase configuration error:', err.message);
 }
 const cloudinaryConfig = getCloudinaryConfig(process.env);
@@ -50,13 +60,9 @@ if (cloudinaryConfig) {
   }
 }
 const otpEnabled = Boolean(firebaseClientConfig && firebaseAuth);
-const phonePeConfig = getPhonePeConfig(process.env);
-const paymentProvider = 'phonepe';
-const paymentsEnabled = isPhonePePaymentsEnabled(phonePeConfig, process.env);
-const paymentMode = phonePeConfig ? phonePeConfig.mode : 'off';
-if (!paymentsEnabled) {
-  console.warn('PhonePe payment gateway is selected but its credentials are not configured.');
-}
+const paymentProvider = 'upi_qr';
+const paymentsEnabled = true;
+const paymentMode = 'manual';
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
@@ -203,6 +209,7 @@ async function getFullBooking(bookingId) {
   booking.date = booking.preferred_date;
   booking.time = booking.preferred_time;
   booking.paymentStatus = booking.payment_status;
+  booking.paymentMethod = booking.payment_method;
   booking.assignedPartner = booking.partner_email || null;
   booking.location = booking.partner_latitude != null && booking.partner_longitude != null
     ? { lat: Number(booking.partner_latitude), lng: Number(booking.partner_longitude), updatedAt: booking.partner_location_updated_at }
@@ -450,10 +457,10 @@ app.get('/partner.html', (_req, res) => res.sendFile(path.join(__dirname, 'partn
 app.get('/health', async (_req, res) => {
   try {
     await query('SELECT 1');
-    return res.json({ ok: true, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', firebaseConfigStatus, mediaStorageProvider: 'cloudinary', cloudStorageEnabled: Boolean(mediaStorage), database: 'connected' });
+    return res.json({ ok: true, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', firebaseConfigStatus, firebaseConfigIssue, mediaStorageProvider: 'cloudinary', cloudStorageEnabled: Boolean(mediaStorage), database: 'connected' });
   } catch (err) {
     console.error('/health error:', err.message);
-    return res.status(503).json({ ok: false, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', firebaseConfigStatus, mediaStorageProvider: 'cloudinary', cloudStorageEnabled: Boolean(mediaStorage), database: 'disconnected' });
+    return res.status(503).json({ ok: false, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', firebaseConfigStatus, firebaseConfigIssue, mediaStorageProvider: 'cloudinary', cloudStorageEnabled: Boolean(mediaStorage), database: 'disconnected' });
   }
 });
 
@@ -469,9 +476,10 @@ async function storeUploadedFile(file, folder) {
 
 function mediaUploadFailure(err, fallback) {
   if (!mediaStorage) return { status: 503, error: 'Cloudinary is not configured on the API. Add CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET in Render Environment, then redeploy.' };
+  if (err && [401, 403].includes(Number(err.statusCode))) return { status: 502, error: 'Cloudinary rejected the account credentials. Confirm the cloud name, API key, and API secret are from the same Cloudinary account.' };
   if (err && err.statusCode) return { status: err.statusCode, error: err.message || fallback };
-  if (/cloudinary upload failed/i.test(String(err && err.message))) {
-    return { status: 502, error: 'Cloudinary rejected the upload. Check the Cloudinary cloud name/API key/secret in Render and retry.' };
+  if (/invalid signature|cloudinary upload failed/i.test(String(err && err.message))) {
+    return { status: 502, error: 'Cloudinary rejected the upload request. Confirm the cloud name, API key, and API secret are from the same Cloudinary account.' };
   }
   return { status: 500, error: fallback };
 }
@@ -1042,6 +1050,46 @@ app.get('/api/settings', async (_req, res) => {
   }
 });
 
+app.get('/api/payment-settings', async (_req, res) => {
+  try {
+    const result = await query("SELECT key, value FROM site_settings WHERE key IN ('paymentQrUrl', 'paymentUpiId')");
+    const settings = Object.fromEntries(result.rows.map((row) => [row.key, row.value]));
+    return res.json({ qrUrl: settings.paymentQrUrl || '', upiId: settings.paymentUpiId || '', payeeName: 'Home-Tech' });
+  } catch (err) {
+    console.error('payment settings read error:', err.message);
+    return res.status(500).json({ error: 'Could not load UPI payment details.' });
+  }
+});
+
+app.post('/api/admin/payment-settings', requireAdmin, upload.single('qr'), async (req, res) => {
+  try {
+    if (req.file && !['image/jpeg', 'image/png', 'image/webp'].includes(req.file.mimetype)) {
+      return res.status(400).json({ error: 'Upload a JPG, PNG, or WebP QR image.' });
+    }
+    const upiId = String(req.body?.upiId || '').trim();
+    if (upiId && !/^[A-Za-z0-9._-]{2,256}@[A-Za-z0-9.-]{2,64}$/.test(upiId)) {
+      return res.status(400).json({ error: 'Enter a valid UPI ID (for example name@bank).' });
+    }
+    const current = await query("SELECT value FROM site_settings WHERE key = 'paymentQrUrl'");
+    const items = [['paymentUpiId', upiId]];
+    if (req.file) {
+      const storedQr = await storeUploadedFile(req.file, 'payment-qr');
+      items.push(['paymentQrUrl', storedQr.url]);
+    } else if (!current.rows[0]?.value) {
+      return res.status(400).json({ error: 'Upload your UPI QR image before saving payment settings.' });
+    }
+    for (const [key, value] of items) {
+      await query(`INSERT INTO site_settings (key, value, created_at, updated_at)
+        VALUES ($1, $2, NOW(), NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`, [key, value]);
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('UPI payment settings save error:', err.message);
+    const failure = mediaUploadFailure(err, 'Could not save UPI payment settings.');
+    return res.status(failure.status).json({ error: failure.error });
+  }
+});
+
 app.post('/api/admin/settings', requireAdmin, upload.single('logo'), async (req, res) => {
   try {
     const items = [];
@@ -1207,7 +1255,7 @@ app.post('/api/bookings', requireSession, async (req, res) => {
     }
     const customerAddress = body.address || {};
     const serviceEntries = Array.isArray(body.serviceItems) ? body.serviceItems : (Array.isArray(body.items) ? body.items : []);
-    const paymentMethod = body.paymentMethod === 'online' ? 'online' : body.paymentMethod === 'cod' ? 'cod' : null;
+    const paymentMethod = ['upi', 'cod'].includes(body.paymentMethod) ? body.paymentMethod : null;
     if (!paymentMethod) {
       return res.status(400).json({ error: 'Choose a valid payment method.' });
     }
@@ -1221,8 +1269,8 @@ app.post('/api/bookings', requireSession, async (req, res) => {
       id: bookingId,
       customer_id: req.user.id,
       status: 'Requested',
-      payment_status: paymentMethod === 'online' ? 'paid' : 'pending',
-      payment_method: paymentMethod === 'online' ? 'online' : 'cod',
+      payment_status: 'pending',
+      payment_method: paymentMethod,
       total: bookingTotal,
       coupon: quote.coupon,
       coupon_discount: couponDiscount,
@@ -1246,25 +1294,6 @@ app.post('/api/bookings', requireSession, async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-
-      let verifiedPaymentOrder = null;
-      if (paymentMethod === 'online') {
-        const paymentOrderId = String(body.paymentOrderId || '');
-        const paymentId = String(body.paymentId || '');
-        const paymentOrderResult = await client.query(
-          `SELECT * FROM payment_orders
-           WHERE order_id = $1 AND user_id = $2 AND booking_id = $3 AND purpose = 'booking' AND status = 'verified'
-           FOR UPDATE`,
-          [paymentOrderId, req.user.id, booking.id]
-        );
-        verifiedPaymentOrder = paymentOrderResult.rows[0];
-        if (!verifiedPaymentOrder || Number(verifiedPaymentOrder.amount) !== bookingTotal || verifiedPaymentOrder.payment_id !== paymentId) {
-          const error = new Error('A verified payment for this booking is required.');
-          error.statusCode = 402;
-          throw error;
-        }
-        booking.payment_method = verifiedPaymentOrder.provider;
-      }
 
       await client.query(
         `INSERT INTO bookings (
@@ -1313,20 +1342,6 @@ app.post('/api/bookings', requireSession, async (req, res) => {
             item.unitPrice,
             item.totalPrice
           ]
-        );
-      }
-
-      if (paymentMethod === 'online') {
-        const paymentOrderId = String(body.paymentOrderId);
-        const paymentId = String(body.paymentId);
-        await client.query(
-          `UPDATE payment_orders SET status = 'consumed', updated_at = NOW() WHERE order_id = $1`,
-          [paymentOrderId]
-        );
-        await client.query(
-          `INSERT INTO payments (booking_id, user_id, provider, order_id, payment_id, signature_verified, amount, status, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
-          [booking.id, req.user.id, verifiedPaymentOrder.provider, paymentOrderId, paymentId, true, bookingTotal, 'paid']
         );
       }
 
@@ -1695,197 +1710,16 @@ app.get('/api/reviews/:serviceId', async (req, res) => {
   }
 });
 
-app.post('/api/create-order', requireSession, async (req, res) => {
-  if (req.user.role !== 'customer') {
-    return res.status(403).json({ error: 'Customer account required.' });
-  }
-  if (!paymentsEnabled) {
-    return res.status(503).json({ error: 'Online payments are not configured on this server.' });
-  }
-
+app.patch('/api/admin/bookings/:id/mark-paid', requireAdmin, async (req, res) => {
   try {
-    const { bookingId, items, coupon } = req.body || {};
-    if (!bookingId || !/^[A-Za-z0-9_-]{1,64}$/.test(String(bookingId))) {
-      return res.status(400).json({ error: 'A valid booking ID is required.' });
-    }
-    const quote = await calculateBookingQuote(items, coupon);
-    if (quote.total <= 0) return res.status(400).json({ error: 'A positive payment amount is required.' });
-
-    const publicSiteUrl = String(process.env.PUBLIC_SITE_URL || allowedOrigins[0] || '').replace(/\/$/, '');
-    if (!publicSiteUrl || (phonePeConfig.mode === 'production' && !publicSiteUrl.startsWith('https://'))) {
-      return res.status(503).json({ error: 'Set the HTTPS PUBLIC_SITE_URL before using PhonePe checkout.' });
-    }
-    const merchantOrderId = newPhonePeOrderId();
-    const returnUrl = new URL('/', publicSiteUrl);
-    returnUrl.searchParams.set('payment', 'phonepe-return');
-    returnUrl.searchParams.set('orderId', merchantOrderId);
-    const phonePeOrder = await createPhonePePayment(phonePeConfig, {
-      merchantOrderId,
-      amountPaise: Math.round(quote.total * 100),
-      redirectUrl: returnUrl.toString(),
-      message: `Home-Tech booking ${bookingId}`
-    });
-    if (!phonePeOrder.redirectUrl || phonePeOrder.state !== 'PENDING') throw new Error('PhonePe did not return a pending checkout session.');
-    await query(
-      `INSERT INTO payment_orders (order_id, user_id, booking_id, purpose, amount, status, provider, created_at, updated_at)
-       VALUES ($1, $2, $3, 'booking', $4, 'created', 'phonepe', NOW(), NOW())`,
-      [merchantOrderId, req.user.id, String(bookingId), quote.total]
-    );
-    return res.json({ provider: 'phonepe', orderId: merchantOrderId, redirectUrl: phonePeOrder.redirectUrl, paymentMode, quote: { subtotal: quote.subtotal, visitCharge: quote.visitCharge, couponDiscount: quote.couponDiscount, total: quote.total } });
+    const result = await query(`UPDATE bookings SET payment_status = 'paid', updated_at = NOW()
+      WHERE id = $1 AND payment_method = 'upi' AND payment_status = 'pending' AND status <> 'Cancelled'
+      RETURNING id, payment_status`, [req.params.id]);
+    if (!result.rows[0]) return res.status(409).json({ error: 'Only an active UPI booking with pending payment can be marked paid.' });
+    return res.json({ success: true, bookingId: result.rows[0].id, paymentStatus: result.rows[0].payment_status });
   } catch (err) {
-    console.error('create-order error:', err.message);
-    return res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : 'Could not create payment order.' });
-  }
-});
-
-app.post('/api/verify-phonepe-payment', requireSession, async (req, res) => {
-  if (req.user.role !== 'customer') return res.status(403).json({ error: 'Customer account required.' });
-  if (paymentProvider !== 'phonepe' || !phonePeConfig) return res.status(503).json({ error: 'PhonePe checkout is not configured.' });
-  try {
-    const orderId = String(req.body?.orderId || '');
-    const orderResult = await query(
-      `SELECT * FROM payment_orders WHERE order_id = $1 AND user_id = $2 AND purpose = 'booking' AND provider = 'phonepe'`,
-      [orderId, req.user.id]
-    );
-    const order = orderResult.rows[0];
-    if (!order) return res.status(404).json({ error: 'PhonePe payment order was not found for this account.' });
-    if (order.status === 'verified' || order.status === 'consumed') return res.json({ success: true, orderId, paymentId: order.payment_id });
-    if (order.status !== 'created') return res.status(409).json({ error: 'This PhonePe payment order cannot be verified.' });
-
-    const status = await getPhonePeOrderStatus(phonePeConfig, orderId);
-    const successfulAttempt = Array.isArray(status.paymentDetails)
-      ? status.paymentDetails.find(item => item && item.state === 'COMPLETED' && item.transactionId)
-      : null;
-    const expectedAmountPaise = Math.round(Number(order.amount) * 100);
-    if (status.state !== 'COMPLETED' || Number(status.amount) !== expectedAmountPaise || !successfulAttempt || Number(successfulAttempt.amount) !== expectedAmountPaise) {
-      return res.status(402).json({ error: 'PhonePe has not confirmed the full payment yet. Check the PhonePe app and retry.' });
-    }
-    const updated = await query(
-      `UPDATE payment_orders SET status = 'verified', payment_id = $1, verified_at = NOW(), updated_at = NOW()
-       WHERE order_id = $2 AND user_id = $3 AND status = 'created' RETURNING order_id`,
-      [successfulAttempt.transactionId, orderId, req.user.id]
-    );
-    if (!updated.rowCount) return res.status(409).json({ error: 'PhonePe payment order was already processed.' });
-    return res.json({ success: true, orderId, paymentId: successfulAttempt.transactionId });
-  } catch (err) {
-    console.error('verify-phonepe-payment error:', err.providerCode || err.message);
-    return res.status(502).json({ error: 'Could not confirm the PhonePe payment status. Please retry shortly.' });
-  }
-});
-
-app.post('/api/partner/wallet/create-order', requireSession, async (req, res) => {
-  try {
-    if (req.user.role !== 'partner') {
-      return res.status(403).json({ error: 'Partner account required.' });
-    }
-    if (!paymentsEnabled) {
-      return res.status(503).json({ error: 'Online payments are not configured on this server.' });
-    }
-
-    const amount = safeNumber(req.body && req.body.amount, 0);
-    const pricingConfig = await getPricingConfig();
-    if (amount < pricingConfig.partnerWalletMinimum) {
-      return res.status(400).json({ error: `Minimum recharge is ₹${pricingConfig.partnerWalletMinimum}.` });
-    }
-
-    if (amount > pricingConfig.partnerWalletMaximumRecharge) return res.status(400).json({ error: `Maximum single recharge is ₹${pricingConfig.partnerWalletMaximumRecharge}.` });
-    const publicSiteUrl = String(process.env.PUBLIC_SITE_URL || allowedOrigins[0] || '').replace(/\/$/, '');
-    if (!publicSiteUrl || (phonePeConfig.mode === 'production' && !publicSiteUrl.startsWith('https://'))) {
-      return res.status(503).json({ error: 'Set the HTTPS PUBLIC_SITE_URL before using PhonePe checkout.' });
-    }
-    const merchantOrderId = newPhonePeOrderId();
-    const returnUrl = new URL('/partner.html', publicSiteUrl);
-    returnUrl.searchParams.set('payment', 'phonepe-wallet-return');
-    returnUrl.searchParams.set('orderId', merchantOrderId);
-    const phonePeOrder = await createPhonePePayment(phonePeConfig, {
-      merchantOrderId, amountPaise: Math.round(amount * 100), redirectUrl: returnUrl.toString(), message: 'Home-Tech partner wallet recharge'
-    });
-    if (!phonePeOrder.redirectUrl || phonePeOrder.state !== 'PENDING') throw new Error('PhonePe did not return a pending checkout session.');
-    await query(
-      `INSERT INTO payment_orders (order_id, user_id, purpose, amount, status, provider, created_at, updated_at)
-       VALUES ($1, $2, 'wallet', $3, 'created', 'phonepe', NOW(), NOW())`,
-      [merchantOrderId, req.user.id, amount]
-    );
-    return res.json({ provider: 'phonepe', orderId: merchantOrderId, redirectUrl: phonePeOrder.redirectUrl, paymentMode });
-  } catch (err) {
-    console.error('wallet create-order error:', err.message);
-    return res.status(500).json({ error: 'Could not create wallet order.' });
-  }
-});
-
-app.post('/api/partner/wallet/verify-payment', requireSession, async (req, res) => {
-  try {
-    if (req.user.role !== 'partner') {
-      return res.status(403).json({ error: 'Partner account required.' });
-    }
-    if (!paymentsEnabled) {
-      return res.status(503).json({ error: 'Online payments are not configured on this server.' });
-    }
-
-    const orderId = String(req.body?.orderId || '');
-    if (!orderId) return res.status(400).json({ error: 'PhonePe order ID is required.' });
-    const status = await getPhonePeOrderStatus(phonePeConfig, orderId);
-    const successfulAttempt = Array.isArray(status.paymentDetails) ? status.paymentDetails.find(item => item && item.state === 'COMPLETED' && item.transactionId) : null;
-    if (!successfulAttempt) return res.status(402).json({ error: 'PhonePe has not confirmed this recharge yet.' });
-
-    const client = await pool.connect();
-    let newBalance;
-    try {
-      await client.query('BEGIN');
-      const orderResult = await client.query(
-        `SELECT * FROM payment_orders
-         WHERE order_id = $1 AND user_id = $2 AND purpose = 'wallet' AND provider = 'phonepe' AND status = 'created'
-         FOR UPDATE`,
-        [orderId, req.user.id]
-      );
-      const order = orderResult.rows[0];
-      if (!order) {
-        const alreadyCredited = await client.query(
-          `SELECT p.wallet_balance FROM payment_orders o JOIN partners p ON p.user_id = o.user_id
-           WHERE o.order_id = $1 AND o.user_id = $2 AND o.purpose = 'wallet' AND o.provider = 'phonepe' AND o.status = 'consumed' AND o.payment_id = $3`,
-          [orderId, req.user.id, successfulAttempt.transactionId]
-        );
-        if (!alreadyCredited.rows[0]) {
-          await client.query('ROLLBACK');
-          return res.status(404).json({ error: 'Wallet payment order not found or already used.' });
-        }
-        await client.query('COMMIT');
-        return res.json({ success: true, balance: Number(alreadyCredited.rows[0].wallet_balance) });
-      }
-
-      if (status.state !== 'COMPLETED' || Number(status.amount) !== Math.round(Number(order.amount) * 100) || Number(successfulAttempt.amount) !== Math.round(Number(order.amount) * 100)) {
-        await client.query('ROLLBACK');
-        return res.status(402).json({ error: 'PhonePe has not confirmed the full wallet recharge amount.' });
-      }
-      const partnerResult = await client.query('SELECT * FROM partners WHERE user_id = $1 FOR UPDATE', [req.user.id]);
-      const partner = partnerResult.rows[0];
-      if (!partner) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Partner profile not found.' });
-      }
-      newBalance = Number(partner.wallet_balance) + Number(order.amount);
-      await client.query('UPDATE partners SET wallet_balance = $1, updated_at = NOW() WHERE user_id = $2', [newBalance, req.user.id]);
-      await client.query(
-        `INSERT INTO partner_wallet_transactions (partner_id, type, amount, reason, payment_id, created_at)
-         VALUES ($1, 'credit', $2, 'Wallet recharge', $3, NOW())`,
-        [partner.id, order.amount, successfulAttempt.transactionId]
-      );
-      await client.query(
-        `UPDATE payment_orders SET status = 'consumed', payment_id = $1, verified_at = NOW(), updated_at = NOW() WHERE order_id = $2`,
-        [successfulAttempt.transactionId, orderId]
-      );
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
-
-    return res.json({ success: true, balance: newBalance });
-  } catch (err) {
-    console.error('wallet verify-payment error:', err.providerCode || err.message);
-    return res.status(502).json({ error: 'Could not verify wallet payment with PhonePe.' });
+    console.error('manual payment confirmation error:', err.message);
+    return res.status(500).json({ error: 'Could not confirm the payment.' });
   }
 });
 

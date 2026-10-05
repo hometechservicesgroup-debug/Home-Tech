@@ -88,7 +88,7 @@
     <label>Recharge Amount</label>
     <input id="rechargeAmount" type="number" min="1" value="500">
     <p id="rechargeErr" class="err"></p>
-    <button class="btn-primary" onclick="startRecharge()">Recharge Now</button>
+    <button class="btn-primary" onclick="startRecharge()">Request Top-up</button>
     <button class="btn-ghost" style="width:100%; margin-top:10px;" onclick="logout()">Logout</button>
   </div>
 </div>
@@ -115,7 +115,7 @@
       <label>Recharge Amount</label>
       <input id="rechargeAmount2" type="number" min="1" value="500">
       <p id="rechargeErr2" class="err"></p>
-      <button class="btn-primary" onclick="startRecharge(true)">Recharge Now</button>
+      <button class="btn-primary" onclick="startRecharge(true)">Request Top-up</button>
     </div>
     <button onclick="toggleTxnHistory()" id="txnToggleBtn" style="background:none; border:none; color:var(--indigo); font-size:12.5px; padding:0; margin-top:10px; cursor:pointer;">View payment history</button>
     <div id="txnHistory" style="display:none; margin-top:10px;"></div>
@@ -232,22 +232,12 @@ function toggleTxnHistory(){
 }
 
 async function startRecharge(fromDash){
-  const amountInput = document.getElementById(fromDash ? 'rechargeAmount2' : 'rechargeAmount');
-  const errEl = document.getElementById(fromDash ? 'rechargeErr2' : 'rechargeErr');
-  errEl.style.display='none';
-  const amount = Number(amountInput.value);
-  if(!amount || amount < minRechargeAmount){ errEl.textContent = `Minimum recharge is ₹${minRechargeAmount}.`; errEl.style.display='block'; return; }
-  if(amount > maxRechargeAmount){ errEl.textContent = `Maximum single recharge is ₹${maxRechargeAmount}.`; errEl.style.display='block'; return; }
-  try{
-    const orderRes = await fetch(`${session.apiBase}/api/partner/wallet/create-order`, {
-      method:'POST', headers:{'Content-Type':'application/json','x-session-token':session.token}, body: JSON.stringify({amount})
-    });
-    const order = await orderRes.json();
-    if(!orderRes.ok) throw new Error(order.error || 'Could not start recharge.');
-    if(order.provider!=='phonepe'||!order.redirectUrl) throw new Error(order.error||'PhonePe wallet checkout is not configured.');
-    sessionStorage.setItem('ht_phonepe_wallet_pending',order.orderId);
-    location.assign(order.redirectUrl);
-  } catch(e){ errEl.textContent = e.message; errEl.style.display='block'; }
+  const amountInput=document.getElementById(fromDash?'rechargeAmount2':'rechargeAmount');
+  const errEl=document.getElementById(fromDash?'rechargeErr2':'rechargeErr');
+  const amount=Number(amountInput.value);
+  if(!amount||amount<minRechargeAmount||amount>maxRechargeAmount){errEl.textContent=`Enter an amount from ₹${minRechargeAmount} to ₹${maxRechargeAmount}.`;errEl.style.display='block';return;}
+  const message=`Hello Home-Tech, I want to request a partner wallet top-up of ₹${amount}. Please share the verified payment details.`;
+  window.open('https://wa.me/919263533988?text='+encodeURIComponent(message),'_blank','noopener');
 }
 
 async function loginWithGoogle(){
@@ -278,21 +268,6 @@ async function loginWithGoogle(){
   }
 }
 
-async function handlePhonePeWalletReturn(){
-  const params=new URLSearchParams(location.search);
-  if(params.get('payment')!=='phonepe-wallet-return') return;
-  const orderId=params.get('orderId')||'';
-  try{
-    if(!session) throw new Error('Log in to your partner account again to check the wallet payment.');
-    if(!/^[A-Za-z0-9_-]{1,63}$/.test(orderId)||sessionStorage.getItem('ht_phonepe_wallet_pending')!==orderId) throw new Error('This wallet payment return does not match the order started in this browser.');
-    const res=await fetch(`${session.apiBase}/api/partner/wallet/verify-payment`,{method:'POST',headers:{'Content-Type':'application/json','x-session-token':session.token},body:JSON.stringify({orderId})});
-    const data=await res.json();
-    if(!res.ok||!data.success) throw new Error(data.error||'PhonePe payment is not confirmed yet.');
-    sessionStorage.removeItem('ht_phonepe_wallet_pending');
-    history.replaceState({},document.title,location.pathname);
-    location.reload();
-  }catch(error){ alert(error.message||'Could not confirm the PhonePe wallet recharge.'); }
-}
 
 function logout(){
   if(session) fetch(`${session.apiBase}/api/auth/logout`, { method:'POST', headers:{'x-session-token':session.token} }).catch(()=>{});
@@ -397,7 +372,6 @@ window.addEventListener('DOMContentLoaded', async ()=>{
       if(meRes.ok){ const me = await meRes.json(); document.getElementById('loginView').style.display='none'; await afterLogin(me.user); }
     } catch(e){ /* fall back to login form */ }
   }
-  await handlePhonePeWalletReturn();
 });
 
 setTimeout(()=>{ const l=document.getElementById('appLoader'); if(l) l.classList.add('loaded'); }, 700);

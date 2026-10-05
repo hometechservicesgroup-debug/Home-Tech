@@ -31,16 +31,6 @@ services:
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT_JSON_BASE64
         sync: false
-      - key: PHONEPE_ENV
-        value: sandbox
-      - key: PHONEPE_CLIENT_ID
-        sync: false
-      - key: PHONEPE_CLIENT_VERSION
-        sync: false
-      - key: PHONEPE_CLIENT_SECRET
-        sync: false
-      - key: PUBLIC_SITE_URL
-        sync: false
       - key: ADMIN_USERNAME
         sync: false
       - key: ADMIN_PASSWORD

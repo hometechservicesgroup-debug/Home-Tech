@@ -8,7 +8,7 @@ This repository keeps the `Initial stable version` Git rollback point and connec
 - Netlify hosts the customer page, admin page, and partner page.
 - Firebase Authentication sends phone sign-in codes and supports Google sign-in. Firebase Admin verifies sign-in tokens on the backend.
 - Cloudinary stores new service images, gallery photos/videos, logos, and partner photos. Existing `/uploads/...` links remain readable during migration.
-- PhonePe is the only payment gateway used for customer bookings and partner wallet recharge.
+- Customers pay by scanning an admin-uploaded UPI QR. Bookings remain payment-pending until an admin verifies the transfer; partner wallet top-ups are arranged with support.
 
 ## Render environment variables
 
@@ -21,15 +21,12 @@ Set these in Render → `hometech-api` → Environment. Never put service secret
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Full Firebase service account JSON. Secret; Render only. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64` | Optional Base64-encoded service-account JSON. Use this if Render corrupts multiline JSON; secret, Render only. When set, it takes precedence. |
 | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Cloudinary account credentials. Keep the API secret on Render only. |
-| `PHONEPE_ENV` | `sandbox` for local testing. On the live Render service set `production` only after PhonePe provides production PG credentials and approves UAT. The live API intentionally disables sandbox checkout. |
-| `PHONEPE_CLIENT_ID`, `PHONEPE_CLIENT_VERSION`, `PHONEPE_CLIENT_SECRET` | PhonePe PG credentials. Keep the secret on Render only. |
-| `PUBLIC_SITE_URL` | Exact HTTPS Netlify site URL, such as `https://your-site.netlify.app`. |
 | `ALLOWED_ORIGIN` | Same Netlify origin without a trailing slash. |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | Bootstrap credentials only if the existing database still needs its first admin. |
 
 Keep `NODE_ENV=production`. Blueprint migrations run against the configured existing database during deploy. Do not run destructive database commands or recreate the database.
 
-PhonePe production access requires a merchant account, UAT and PhonePe approval. Production credentials cannot be substituted with sandbox credentials. The server confirms payment with PhonePe's order status API before it records a booking or credits a partner wallet. See PhonePe [Authorization](https://developer.phonepe.com/payment-gateway/website-integration/standard-checkout/api-integration/api-reference/authorization), [Create Payment](https://developer.phonepe.com/payment-gateway/website-integration/standard-checkout/api-integration/api-reference/create-payment), [Order Status](https://developer.phonepe.com/payment-gateway/website-integration/standard-checkout/api-integration/api-reference/order-status), and [Go Live](https://developer.phonepe.com/payment-gateway/uat-testing-go-live/go-live).
+After deploying, open Admin → Branding, enter the optional UPI ID and upload the business QR image. Customer checkout can then open the UPI app from a phone when an ID is configured, or scan the QR from another device. Verify transfers in your business account before using “Verify UPI & Mark Paid” in the admin booking list.
 
 ## Firebase setup
 
@@ -48,7 +45,7 @@ New admin service images, gallery images/videos, logos and partner photos go to 
 
 Connect the GitHub repository with production branch `master` and build command `npm run build:netlify`. Set Netlify environment variable `RENDER_API_URL` to the Render API URL, then deploy. The build creates `dist` with `index.html`, `admin.html`, and `partner.html`. No Firebase secret or additional Firebase variable is required on Netlify; Firebase Web config is read from Render's public config endpoint.
 
-After the final Netlify hostname is known, set `PUBLIC_SITE_URL` and `ALLOWED_ORIGIN` in Render to that exact HTTPS origin, save and redeploy. Useful URLs:
+After the final Netlify hostname is known, set `ALLOWED_ORIGIN` in Render to that exact HTTPS origin, save and redeploy. Useful URLs:
 
 - Customer: `https://YOUR-SITE.netlify.app/`
 - Admin: `https://YOUR-SITE.netlify.app/admin.html`

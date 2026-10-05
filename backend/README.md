@@ -1,12 +1,12 @@
 # Home-Tech backend
 
-The backend uses the existing PostgreSQL database, Firebase Phone Authentication and Google sign-in, Cloudinary for new media, and PhonePe for customer booking payments and partner wallet recharge.
+The backend uses the existing PostgreSQL database, Firebase Phone Authentication and Google sign-in, Cloudinary for new media, and manually verified UPI QR payments for customer bookings.
 
 ## Local development
 
 1. Copy `.env.example` to `.env` and set the existing PostgreSQL connection in `DATABASE_URL`.
-2. Add the Firebase Web App settings and Firebase Admin service account values. Set PhonePe sandbox credentials only if you have them.
-3. Set `ALLOWED_ORIGIN` to your local website origin, such as `http://localhost:5500`, and set `PUBLIC_SITE_URL` to a reachable return URL.
+2. Add the Firebase Web App settings and Firebase Admin service account values. Upload the business UPI QR and optionally set its UPI ID from Admin → Branding.
+3. Set `ALLOWED_ORIGIN` to your local website origin, such as `http://localhost:5500`,.
 4. Run `npm ci`, `npm run migrate`, then `npm start`.
 5. Open the storefront at `http://localhost:4000/`, admin at `/admin.html`, and partner at `/partner.html`.
 
@@ -14,6 +14,6 @@ The customer phone must be verified with Firebase OTP before registration. Exist
 
 ## Production
 
-Render hosts this service. Keep the existing PostgreSQL connection; migrations are additive. Set all Firebase, PhonePe, CORS and admin environment variables in Render. Never put Firebase service account JSON or PhonePe client secret into a public HTML file, Netlify variable, or chat. Real SMS depends on Firebase Phone Authentication setup, billing, region policy, quota and authorized domains. PhonePe production checkout requires PhonePe merchant approval and production PG credentials after UAT.
+Render hosts this service. Keep the existing PostgreSQL connection; migrations are additive. Set Firebase, Cloudinary, CORS and admin environment variables in Render. Never put Firebase service account JSON or Cloudinary API secret in public HTML, Netlify variables, or chat. Customer UPI QR payments stay pending until an admin verifies receipt in the business account. Real SMS depends on Firebase Phone Authentication setup, billing, region policy, quota and authorized domains.
 
 New uploads use Cloudinary when configured; each file is limited to 50 MB. The current Cloudinary free plan has a shared monthly credit allowance for storage, bandwidth and transformations. Existing `/uploads` files use the local Render filesystem and need migration to durable storage.
