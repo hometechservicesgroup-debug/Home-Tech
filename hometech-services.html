@@ -587,7 +587,7 @@ const CATEGORIES = [...new Set(SERVICES.map(s=>s.cat))];
 /* ============ STATE / STORAGE ============ */
 const LS = {
   cart:'ht_cart', session:'ht_session', bookings:'ht_bookings',
-  wishlist:'ht_wishlist', coupon:'ht_coupon'
+  wishlist:'ht_wishlist', coupon:'ht_coupon', firebasePhoneAuth:'ht_firebase_phone_auth'
 };
 function loadJSON(key, fallback){ try{ return JSON.parse(localStorage.getItem(key)) ?? fallback; }catch(e){ return fallback; } }
 function saveJSON(key, val){ localStorage.setItem(key, JSON.stringify(val)); }
@@ -772,6 +772,7 @@ let customerBookingsError = '';
 function logout(){
   const session = getSession();
   if(session) fetch(`${OTP_API_BASE}/api/auth/logout`, { method:'POST', headers:authHeaders() }).catch(()=>{});
+  signOutFirebasePhoneAuth();
   sessionStorage.removeItem(LS.session);
   customerBookings = []; customerBookingsToken = null; customerBookingsError = '';
   refreshAuthNav(); go('home');
@@ -833,6 +834,7 @@ function refreshAuthNav(){
 
 function clearAllLocalData(){
   if(!confirm('This clears your cart, saved bookings and login from this device. Continue?')) return;
+  signOutFirebasePhoneAuth();
   [LS.cart, LS.bookings, LS.wishlist, LS.coupon].forEach(k=>localStorage.removeItem(k));
   sessionStorage.removeItem(LS.session);
   customerBookings = []; customerBookingsToken = null; customerBookingsError = '';
@@ -1469,12 +1471,16 @@ const isLocalStaticPage = location.protocol==='file:' || (isLocalHost && ['','55
 const LOCAL_API_BASE = isLocalStaticPage ? 'http://localhost:4000' : location.origin;
 const OTP_API_BASE = (window.HOMETakeApiBase || (API_BASE_META && API_BASE_META.content) || LOCAL_API_BASE).replace(/\/$/, '');
 let authState = { role:'customer', step:'choose', identifier:'', verifyToken:'', confirmationResult:null };
+let otpRetryAt = 0;
+let otpCountdownTimer = null;
 
-function resetAuthState(){ authState = { role:'customer', step:'choose', identifier:'', verifyToken:'', confirmationResult:null }; }
+function resetAuthState(){ authState = { role:'customer', step:'choose', identifier:'', verifyToken:'', confirmationResult:null }; otpRetryAt=0; clearInterval(otpCountdownTimer); }
 
 /* ---- LOGIN (email + password) ---- */
 function renderLoginView(){
   if(currentUser()) return renderAccountView();
+  if(authState.step==='phone') return phoneLoginStep();
+  if(authState.step==='otp' && authState.purpose==='login') return phoneOtpStep('login');
   return `
   <section class="px-5 sm:px-8 py-16 sm:py-24">
     <div class="max-w-sm mx-auto glass rounded-3xl p-8">
@@ -1490,10 +1496,20 @@ function renderLoginView(){
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
       <button onclick="go('forgot')" class="text-[12.5px] text-[var(--indigo-0)] hover:underline mb-5 block">Forgot Password?</button>
       <button onclick="doLogin()" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4">Sign In</button>
+      <button onclick="authState.step='phone'; authState.purpose='login'; go('login')" class="w-full py-3 rounded-full btn-ghost text-white text-[14px] font-medium mb-4">Login with Phone OTP</button>
       <button onclick="loginWithGoogle()" class="w-full py-3 rounded-full btn-ghost text-white text-[14px] font-medium mb-4">Continue with Google</button>
       <p class="text-[13px] text-[var(--ink-2)] text-center">New here? <button onclick="resetAuthState(); go('signup')" class="text-[var(--indigo-0)] hover:underline">Create an account</button></p>
     </div>
   </section>`;
+}
+function phoneLoginStep(){
+  return `<section class="px-5 sm:px-8 py-16 sm:py-24"><div class="max-w-sm mx-auto glass rounded-3xl p-8">
+    <button onclick="authState.step='choose'; go('login')" class="text-[12.5px] text-[var(--ink-2)] hover:text-white mb-5">← Back to Login</button>
+    <h2 class="font-display text-[24px] text-white mb-1">Login with Phone</h2><p class="text-[13px] text-[var(--ink-2)] mb-6">Enter your registered Indian mobile number. SMS and carrier rates may apply.</p>
+    <input id="authIdentifier" type="tel" placeholder="10-digit mobile number" autocomplete="tel" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">
+    <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p><div id="firebase-recaptcha-login"></div>
+    <button onclick="sendOtp('login')" id="sendOtpBtn" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mt-3">Send OTP</button>
+  </div></section>`;
 }
 async function doLogin(){
   const email = document.getElementById('liEmail').value.trim();
@@ -1531,7 +1547,7 @@ function signupChooseStep(){
       <p class="text-[13px] text-[var(--ink-2)] mb-6">Verify with OTP first, then set your password.</p>
       <input id="authIdentifier" type="tel" placeholder="10-digit mobile number" autocomplete="tel" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
-      <p class="text-[11.5px] text-[var(--ink-2)] mb-3">Firebase will send a one-time SMS code. Limited to 3 requests per day per number.</p>
+      <p class="text-[11.5px] text-[var(--ink-2)] mb-3">Firebase will send a one-time SMS code. Limited to 3 requests per day per number; carrier rates may apply.</p>
       <div id="firebase-recaptcha-signup"></div>
       <button onclick="sendOtp('signup')" id="sendOtpBtn" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4">Send OTP</button>
       <p class="text-[13px] text-[var(--ink-2)] text-center">Already have an account? <button onclick="resetAuthState(); go('login')" class="text-[var(--indigo-0)] hover:underline">Log In</button></p>
@@ -1539,18 +1555,22 @@ function signupChooseStep(){
   </section>`;
 }
 function signupOtpStep(){
+  return phoneOtpStep('signup');
+}
+function phoneOtpStep(purpose){
+  const backView = purpose==='login' ? 'login' : 'signup';
   return `
   <section class="px-5 sm:px-8 py-16 sm:py-24">
     <div class="max-w-sm mx-auto glass rounded-3xl p-8">
-      <button onclick="authState.step='choose'; go('signup');" class="text-[12.5px] text-[var(--ink-2)] hover:text-white mb-5 flex items-center gap-1"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>Change phone number</button>
+      <button onclick="authState.step='${purpose==='login'?'phone':'choose'}'; go('${backView}');" class="text-[12.5px] text-[var(--ink-2)] hover:text-white mb-5 flex items-center gap-1"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>Change phone number</button>
       <div class="lc-wrap" id="lcWrap"><svg viewBox="0 0 240 130" aria-hidden="true"><g class="lc-body"><rect x="20" y="20" width="60" height="110" rx="10" fill="#6d5df6"/><g class="lc-eye"><circle cx="40" cy="50" r="6.5" fill="#fff"/><circle class="lc-pupil" cx="40" cy="50" r="3.2" fill="#111"/></g><g class="lc-eye"><circle cx="62" cy="50" r="6.5" fill="#fff"/><circle class="lc-pupil" cx="62" cy="50" r="3.2" fill="#111"/></g><path d="M42 72q9 6 18 0" stroke="#111" stroke-width="2.5" fill="none" stroke-linecap="round"/></g><g class="lc-body lc-b2"><rect x="82" y="50" width="42" height="80" rx="8" fill="#1c1f2b"/><g class="lc-eye"><circle cx="96" cy="72" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="96" cy="72" r="2.8" fill="#111"/></g><g class="lc-eye"><circle cx="112" cy="72" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="112" cy="72" r="2.8" fill="#111"/></g></g><g class="lc-body lc-b3"><path d="M120 130a55 55 0 0 1 110 0z" fill="#ff8a3d"/><g class="lc-eye"><circle cx="160" cy="104" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="160" cy="104" r="2.8" fill="#111"/></g><g class="lc-eye"><circle cx="184" cy="104" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="184" cy="104" r="2.8" fill="#111"/></g><path d="M166 116q6 5 12 0" stroke="#111" stroke-width="2.5" fill="none" stroke-linecap="round"/></g><g class="lc-body lc-b4"><rect x="128" y="62" width="44" height="68" rx="20" fill="#f2c94c"/><g class="lc-eye"><circle cx="142" cy="84" r="5" fill="#fff"/><circle class="lc-pupil" cx="142" cy="84" r="2.5" fill="#111"/></g><g class="lc-eye"><circle cx="158" cy="84" r="5" fill="#fff"/><circle class="lc-pupil" cx="158" cy="84" r="2.5" fill="#111"/></g></g></svg></div>
       <h2 class="font-display text-[24px] text-white mb-1">Enter OTP</h2>
       <p class="text-[13px] text-[var(--ink-2)] mb-6">Sent to <span class="text-white">${escapeHtml(authState.identifier)}</span> by SMS.</p>
       <input id="otpCode" inputmode="numeric" maxlength="6" placeholder="6-digit code" class="lc-input w-full rounded-xl px-4 py-3 text-[18px] tracking-[0.3em] text-center mb-2">
-      <div id="firebase-recaptcha-signup"></div>
+      <div id="firebase-recaptcha-${purpose==='forgot'?'forgot':purpose==='login'?'login':'signup'}"></div>
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
-      <button onclick="verifyOtp('signup')" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4">Verify & Continue</button>
-      <p class="text-[13px] text-[var(--ink-2)] text-center">Didn't get it? <button id="resendBtn" onclick="sendOtp('signup', true)" class="text-[var(--indigo-0)] hover:underline">Resend OTP</button></p>
+      <button onclick="verifyOtp('${purpose}')" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4">${purpose==='login'?'Verify & Login':'Verify & Continue'}</button>
+      <p class="text-[13px] text-[var(--ink-2)] text-center">Didn't get it? <button id="resendBtn" onclick="sendOtp('${purpose}', true)" class="text-[var(--indigo-0)] hover:underline">Resend OTP</button></p>
     </div>
   </section>`;
 }
@@ -1573,27 +1593,60 @@ function signupSetupStep(){
 }
 function authErr(msg){ const e=document.getElementById('authError'); if(e){ e.textContent=msg; e.classList.remove('hidden'); } }
 
-/* purpose: 'signup' | 'forgot' — decides where sendOtp/verifyOtp send the user next */
-function loadScriptOnce(src){
-  return new Promise((resolve,reject)=>{
-    const existing=document.querySelector(`script[src="${src}"]`);
-    if(existing){ if(existing.dataset.loaded==='true') return resolve(); existing.addEventListener('load',resolve,{once:true}); existing.addEventListener('error',reject,{once:true}); return; }
-    const script=document.createElement('script'); script.src=src; script.async=true;
-    script.onload=()=>{script.dataset.loaded='true';resolve();}; script.onerror=()=>reject(new Error('Could not load Firebase phone sign-in.'));
-    document.head.appendChild(script);
-  });
+/* Firebase Web SDK modular imports are loaded once and reused for phone and Google sign-in. */
+let homeTechFirebaseModulesPromise=null;
+let homeTechFirebaseRecaptcha=null;
+let homeTechFirebaseObserverStarted=false;
+let homeTechFirebaseUser=null;
+async function getFirebasePhoneAuth(){
+  if(!homeTechFirebaseModulesPromise){
+    homeTechFirebaseModulesPromise=(async()=>{
+      const [appMod,authMod]=await Promise.all([
+        import('https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js'),
+        import('https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js')
+      ]);
+      let app=appMod.getApps().find(item=>item.name==='hometake-phone-auth');
+      if(!app){
+        const configRes=await fetch(`${OTP_API_BASE}/api/auth/firebase-config`);
+        const config=await configRes.json();
+        if(!configRes.ok) throw new Error(config.error||'Firebase phone sign-in is not configured yet.');
+        app=appMod.initializeApp(config,'hometake-phone-auth');
+      }
+      const auth=authMod.getAuth(app);
+      await authMod.setPersistence(auth,authMod.browserLocalPersistence);
+      authMod.useDeviceLanguage(auth);
+      window.homeTechFirebaseAuth=auth;
+      window.homeTechFirebaseModules=authMod;
+      if(!homeTechFirebaseObserverStarted){
+        homeTechFirebaseObserverStarted=true;
+        authMod.onAuthStateChanged(auth,user=>{homeTechFirebaseUser=user||null;window.homeTechFirebaseUser=homeTechFirebaseUser;});
+      }
+      return {app,auth,appMod,authMod};
+    })().catch(error=>{homeTechFirebaseModulesPromise=null;throw error;});
+  }
+  return homeTechFirebaseModulesPromise;
+}
+function signOutFirebasePhoneAuth(){
+  const wasPhoneAuth=localStorage.getItem(LS.firebasePhoneAuth)==='1';
+  localStorage.removeItem(LS.firebasePhoneAuth);
+  if(window.homeTechFirebaseAuth && window.homeTechFirebaseModules){
+    return window.homeTechFirebaseModules.signOut(window.homeTechFirebaseAuth).catch(()=>{});
+  }
+  if(wasPhoneAuth) return getFirebasePhoneAuth().then(({auth,authMod})=>authMod.signOut(auth)).catch(()=>{});
+  return Promise.resolve();
 }
 async function loginWithGoogle(){
   const err=document.getElementById('authError'); err.classList.add('hidden');
   try{
-    const auth=await getFirebasePhoneAuth();
-    const provider=new window.firebase.auth.GoogleAuthProvider();
-    const result=await auth.signInWithPopup(provider);
+    const {auth,authMod}=await getFirebasePhoneAuth();
+    const provider=new authMod.GoogleAuthProvider();
+    const result=await authMod.signInWithPopup(auth,provider);
     const idToken=await result.user.getIdToken(true);
     const res=await fetch(`${OTP_API_BASE}/api/auth/google-login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken})});
     const data=await res.json();
-    try{await auth.signOut();}catch{}
+    try{await authMod.signOut(auth);}catch{}
     if(!res.ok) throw new Error(data.error||'Google sign-in failed.');
+    localStorage.removeItem(LS.firebasePhoneAuth);
     setSession(data.token,data.user); refreshAuthNav(); go('account');
   }catch(error){
     const code=String(error&&error.code||'');
@@ -1601,25 +1654,15 @@ async function loginWithGoogle(){
     authErr(code.includes('unauthorized-domain')?'Add this website domain in Firebase Authentication → Settings → Authorized domains.':error.message||'Google sign-in failed.');
   }
 }
-async function getFirebasePhoneAuth(){
-  await loadScriptOnce('https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js');
-  await loadScriptOnce('https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js');
-  if(!window.hometakeFirebaseApp){
-    const configRes=await fetch(`${OTP_API_BASE}/api/auth/firebase-config`);
-    const config=await configRes.json();
-    if(!configRes.ok) throw new Error(config.error||'Firebase phone sign-in is not configured yet.');
-    window.hometakeFirebaseApp=window.firebase.initializeApp(config,'hometake-phone-auth');
-  }
-  const auth=window.hometakeFirebaseApp.auth(); auth.useDeviceLanguage();
-  return auth;
-}
 function firebaseOtpMessage(error){
   const code=String(error&&error.code||'');
   if(code.includes('too-many-requests')) return 'Too many OTP requests. Please wait before trying again.';
+  if(code.includes('invalid-verification-code')) return 'That OTP is incorrect. Check the SMS and enter the latest 6-digit code.';
+  if(code.includes('code-expired')||code.includes('session-expired')) return 'This OTP has expired. Request a fresh code and try again.';
   if(code.includes('invalid-phone-number')) return 'Enter a valid mobile number with country code.';
   if(code.includes('operation-not-allowed')) return 'Phone OTP is not enabled in the Firebase project yet.';
   if(code.includes('billing-not-enabled')) return 'Firebase Phone OTP needs billing enabled for this Firebase project.';
-  if(code.includes('captcha-check-failed')||code.includes('invalid-app-credential')||code.includes('app-not-authorized')||code.includes('unauthorized-domain')) return 'Firebase blocked this website. Add the exact Netlify domain in Firebase Authentication → Settings → Authorized domains, then retry.';
+  if(code.includes('captcha-check-failed')||code.includes('invalid-app-credential')||code.includes('app-not-authorized')||code.includes('unauthorized-domain')) return 'Firebase could not verify this website. Check the site domain in Firebase Authentication → Settings → Authorized domains, then retry.';
   if(code.includes('quota-exceeded')) return 'Firebase SMS quota is exhausted. Check the Firebase Authentication usage and billing limits.';
   if(code.includes('missing-phone-number')) return 'Enter the customer mobile number first.';
   if(code.includes('network-request-failed')) return 'Internet connection failed while requesting the SMS. Check the connection and retry.';
@@ -1629,34 +1672,49 @@ async function sendOtp(purpose, isResend){
   const err=document.getElementById('authError'); if(err) err.classList.add('hidden');
   let phone=authState.identifier;
   if(!isResend){
-    const raw=document.getElementById('authIdentifier').value.trim();
+    const raw=(document.getElementById('authIdentifier')?.value||'').trim();
     const digits=raw.replace(/\D/g,'');
-    if(digits.length<10||digits.length>12){authErr('Please enter a valid Indian mobile number.');return;}
-    phone='+'+(digits.length===10?'91'+digits:digits.startsWith('91')?digits:digits);
+    const national=digits.length===10?digits:digits.length===11&&digits.startsWith('0')?digits.slice(1):digits.length===12&&digits.startsWith('91')?digits.slice(2):'';
+    if(!/^[6-9]\d{9}$/.test(national)){authErr('Please enter a valid 10-digit Indian mobile number.');return;}
+    phone='+91'+national;
     if(!/^\+91\d{10}$/.test(phone)){authErr('Please enter a valid Indian mobile number.');return;}
     authState.identifier=phone;
   }
+  if(isResend&&Date.now()<otpRetryAt){authErr(`Please wait ${Math.ceil((otpRetryAt-Date.now())/1000)} seconds before requesting another code.`);return;}
   const btn=document.getElementById('sendOtpBtn')||document.getElementById('resendBtn');
   if(btn){btn.textContent='Sending…';btn.disabled=true;}
   try{
-    const auth=await getFirebasePhoneAuth();
-    if(window.hometakeRecaptcha){try{window.hometakeRecaptcha.clear();}catch{} window.hometakeRecaptcha=null;}
-    const recaptchaContainerId=purpose==='forgot'?'firebase-recaptcha-forgot':'firebase-recaptcha-signup';
+    const {auth,authMod}=await getFirebasePhoneAuth();
+    if(homeTechFirebaseRecaptcha){try{homeTechFirebaseRecaptcha.clear();}catch{} homeTechFirebaseRecaptcha=null;}
+    const recaptchaContainerId=`firebase-recaptcha-${purpose==='forgot'?'forgot':purpose==='login'?'login':'signup'}`;
     const recaptchaElement=document.getElementById(recaptchaContainerId);
     if(!recaptchaElement) throw new Error('Phone verification could not start. Refresh the page and try again.');
-    window.hometakeRecaptcha=new window.firebase.auth.RecaptchaVerifier(recaptchaContainerId,{size:'normal'});
-    await window.hometakeRecaptcha.render();
+    homeTechFirebaseRecaptcha=new authMod.RecaptchaVerifier(auth,recaptchaElement,{size:'normal'});
+    await homeTechFirebaseRecaptcha.render();
     const limitRes=await fetch(`${OTP_API_BASE}/api/auth/otp-attempt`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
     const limitData=await limitRes.json();
     if(!limitRes.ok) throw new Error(limitData.error||'OTP request limit reached.');
-    authState.confirmationResult=await auth.signInWithPhoneNumber(phone,window.hometakeRecaptcha);
+    authState.confirmationResult=await authMod.signInWithPhoneNumber(auth,phone,homeTechFirebaseRecaptcha);
+    try{homeTechFirebaseRecaptcha.clear();}catch{} homeTechFirebaseRecaptcha=null;
+    authState.purpose=purpose; otpRetryAt=Date.now()+60000;
     authState.step='otp';
-    go(purpose==='forgot'?'forgot':'signup');
+    go(purpose==='forgot'?'forgot':purpose==='login'?'login':'signup');
+    startOtpCountdown();
   }catch(error){
     authErr(firebaseOtpMessage(error));
     if(btn){btn.textContent=isResend?'Resend OTP':'Send OTP';btn.disabled=false;}
-    if(window.hometakeRecaptcha){try{window.hometakeRecaptcha.clear();}catch{} window.hometakeRecaptcha=null;}
+    if(homeTechFirebaseRecaptcha){try{homeTechFirebaseRecaptcha.clear();}catch{} homeTechFirebaseRecaptcha=null;}
   }
+}
+function startOtpCountdown(){
+  clearInterval(otpCountdownTimer);
+  const update=()=>{
+    const button=document.getElementById('resendBtn'); if(!button){clearInterval(otpCountdownTimer);return;}
+    const seconds=Math.max(0,Math.ceil((otpRetryAt-Date.now())/1000));
+    button.disabled=seconds>0; button.textContent=seconds?`Resend in ${seconds}s`:'Resend OTP';
+    if(!seconds) clearInterval(otpCountdownTimer);
+  };
+  update(); otpCountdownTimer=setInterval(update,1000);
 }
 async function verifyOtp(purpose){
   const code=document.getElementById('otpCode').value.trim();
@@ -1665,15 +1723,20 @@ async function verifyOtp(purpose){
     if(!authState.confirmationResult) throw new Error('This OTP request expired. Send a new code.');
     const result=await authState.confirmationResult.confirm(code);
     const idToken=await result.user.getIdToken(true);
-    const res=await fetch(`${OTP_API_BASE}/api/auth/verify-firebase-phone`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken})});
+    const endpoint=purpose==='forgot'?'/api/auth/verify-firebase-phone':'/api/auth/phone-login';
+    const res=await fetch(`${OTP_API_BASE}${endpoint}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken})});
     const data=await res.json();
     if(!res.ok||!data.success) throw new Error(data.error||'Phone verification failed.');
-    authState.verifyToken=data.verifyToken;
-    authState.identifier=data.identifier;
     authState.confirmationResult=null;
-    try{await window.hometakeFirebaseApp.auth().signOut();}catch{}
-    authState.step=purpose==='forgot'?'newpass':'setup';
-    go(purpose==='forgot'?'forgot':'signup');
+    if(purpose==='forgot'){
+      authState.verifyToken=data.verifyToken; authState.identifier=data.identifier; authState.step='newpass'; go('forgot');
+    }else if(data.needsProfile){
+      localStorage.setItem(LS.firebasePhoneAuth,'1');
+      authState.verifyToken=data.verifyToken; authState.identifier=data.identifier; authState.step='setup'; go('signup');
+    }else{
+      localStorage.setItem(LS.firebasePhoneAuth,'1');
+      setSession(data.token,data.user); resetAuthState(); refreshAuthNav(); go('account');
+    }
   }catch(error){authErr(firebaseOtpMessage(error));}
 }
 async function finishSignup(){
@@ -1757,6 +1820,7 @@ async function submitNewPassword(){
     });
     const data = await res.json();
     if(!res.ok){ authErr(data.error || 'Could not reset password.'); return; }
+    await signOutFirebasePhoneAuth();
     resetAuthState();
     showModal(`
       <div class="text-center py-2">
@@ -2272,6 +2336,7 @@ updateCartBadge();
 refreshAuthNav();
 go('home');
 restoreSession();
+if(localStorage.getItem(LS.firebasePhoneAuth)==='1') getFirebasePhoneAuth().catch(()=>{});
 applyPriceOverrides();
 applyBrandingSettings();
 window.addEventListener('resize', ()=> updateDesktopNavPill(currentView));

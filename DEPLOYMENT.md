@@ -34,18 +34,19 @@ PhonePe production access requires a merchant account, UAT and PhonePe approval.
 ## Firebase setup
 
 1. In Firebase Console → Authentication → Sign-in method, enable **Phone** and **Google**.
-2. In Authentication settings → Authorized domains, add the exact Netlify hostname. Add `localhost` only for local testing. Confirm India is allowed under the phone SMS region policy.
-3. Real Firebase phone SMS requires the project to meet Firebase billing, quota and region requirements. Google sign-in does not send phone OTPs. Google login only works for an existing Home-Tech account whose email matches the verified Google email; new accounts still register with phone OTP.
+2. In Authentication settings → Authorized domains, keep the exact Netlify hostname authorized. Confirm India is allowed under the phone SMS region policy. Firebase Phone Auth does not support `localhost` as a hosted domain for real SMS. For local UI/auth flow testing, configure a fictional Firebase test phone number/code; use an HTTPS staging hostname authorized in Firebase to test real SMS.
+3. Real Firebase verification SMS requires a linked Cloud Billing account and uses per-SMS pricing; the Firebase Spark plan does not send production verification SMS. Add billing only if you accept those SMS charges. Firebase test numbers work without sending SMS or consuming Firebase SMS quota. Google login only works for an existing Home-Tech account whose email matches the verified Google email. Customers can sign in using either their existing email/password or phone OTP; a verified phone already in the customer table is linked to that same record, preserving its bookings.
 4. Create a Cloudinary account and set `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` in Render. New media uploads go to Cloudinary; current file limit is 50 MB. The free plan currently includes 25 monthly credits shared across storage, bandwidth, and transformations, so monitor usage and review [Cloudinary pricing](https://cloudinary.com/pricing). Do not put the API secret in Netlify, HTML, chat, or source control.
-5. Firebase service-account JSON remains on Render for backend token verification and login; it is no longer used for media storage. After deploying, `/health` should show `otpEnabled: true`, `otpProvider: "firebase"`, and `cloudStorageEnabled: true` (Cloudinary configured).
+5. Firebase service-account JSON remains on Render for backend token verification and login; it is no longer used for media storage. The customer page uses Firebase Web SDK modular imports from Google's CDN; the existing Web App config is still served by the backend `/api/auth/firebase-config` endpoint. No Firebase service-account credentials go to Netlify. After deploying, `/health` should show `otpEnabled: true`, `otpProvider: "firebase"`, and `cloudStorageEnabled: true` (Cloudinary configured).
+6. The next Render deploy automatically runs an additive PostgreSQL migration that adds a Firebase UID link to existing customer records. It does not change or remove bookings, customer profiles, or Firestore data.
 
-If phone OTP fails, the on-page message identifies common causes. Also inspect Firebase Authentication usage/quota, SMS region policy, billing, reCAPTCHA, and whether the current Netlify domain is authorized. Firebase test phone numbers do not send actual SMS.
+If phone OTP fails, the on-page message identifies common causes. Also inspect Firebase Authentication usage/quota, SMS region policy, billing, reCAPTCHA, and whether the current Netlify domain is authorized. OTP resend has a 60-second client countdown and still honors the existing three-requests-per-day backend limit. For local automated/manual verification, configure a fictional phone/code in Firebase Authentication → Sign-in method → Phone numbers for testing, then use that exact number/code in the app.
 
 New admin service images, gallery images/videos, logos and partner photos go to Cloudinary. Uploads currently have a 50 MB per-file limit. Old local upload files are still ephemeral on Render unless copied to persistent storage.
 
 ## Netlify
 
-Connect the GitHub repository with production branch `master` and build command `npm run build:netlify`. Set Netlify environment variable `RENDER_API_URL` to the Render API URL, then deploy. The build creates `dist` with `index.html`, `admin.html`, and `partner.html`.
+Connect the GitHub repository with production branch `master` and build command `npm run build:netlify`. Set Netlify environment variable `RENDER_API_URL` to the Render API URL, then deploy. The build creates `dist` with `index.html`, `admin.html`, and `partner.html`. No Firebase secret or additional Firebase variable is required on Netlify; Firebase Web config is read from Render's public config endpoint.
 
 After the final Netlify hostname is known, set `PUBLIC_SITE_URL` and `ALLOWED_ORIGIN` in Render to that exact HTTPS origin, save and redeploy. Useful URLs:
 

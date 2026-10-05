@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getFirebaseClientConfig, initializeFirebaseAdmin, verifyFirebasePhoneToken, verifyFirebaseGoogleToken } = require('../firebase-auth');
+const { getFirebaseClientConfig, initializeFirebaseAdmin, verifyFirebasePhoneToken, verifyFirebasePhoneIdentity, verifyFirebaseGoogleToken } = require('../firebase-auth');
 
 const webConfig = { FIREBASE_API_KEY: 'public-key', FIREBASE_AUTH_DOMAIN: 'home-tech.firebaseapp.com', FIREBASE_PROJECT_ID: 'home-tech', FIREBASE_APP_ID: '1:123:web:abc' };
 const serviceAccount = { project_id: 'home-tech', client_email: 'firebase-admin@home-tech.iam.gserviceaccount.com', private_key: 'private-key' };
@@ -37,9 +37,11 @@ test('server accepts only fresh Firebase phone sign-in tokens with an E.164 numb
     firebase: { sign_in_provider: 'phone' }
   }) };
   assert.equal(await verifyFirebasePhoneToken('x'.repeat(120), auth, 1000), '+919876543210');
+  assert.deepEqual(await verifyFirebasePhoneIdentity('x'.repeat(120), auth, 1000), { uid: 'uid-123', phoneNumber: '+919876543210' });
   await assert.rejects(verifyFirebasePhoneToken('x'.repeat(120), { verifyIdToken: async () => ({ phone_number: '+919876543210', auth_time: 990, firebase: { sign_in_provider: 'password' } }) }, 1000), /phone sign-in/);
   await assert.rejects(verifyFirebasePhoneToken('x'.repeat(120), { verifyIdToken: async () => ({ phone_number: '+919876543210', auth_time: 1, firebase: { sign_in_provider: 'phone' } }) }, 1000), /expired/);
   await assert.rejects(verifyFirebasePhoneToken('short', auth, 1000), /token is invalid/);
+  await assert.rejects(verifyFirebasePhoneIdentity('x'.repeat(120), { verifyIdToken: async () => ({ phone_number: '+919876543210', auth_time: 990, firebase: { sign_in_provider: 'phone' } }) }, 1000), /valid user ID/);
 });
 
 test('server accepts only fresh, verified Firebase Google sign-in tokens', async () => {

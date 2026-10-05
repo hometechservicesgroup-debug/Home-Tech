@@ -10,7 +10,7 @@ The backend uses the existing PostgreSQL database, Firebase Phone Authentication
 4. Run `npm ci`, `npm run migrate`, then `npm start`.
 5. Open the storefront at `http://localhost:4000/`, admin at `/admin.html`, and partner at `/partner.html`.
 
-The customer phone must be verified with Firebase OTP before registration. Google login is for existing accounts with a matching verified Google email. Customer and partner bookings retain server-side ownership and price validation.
+The customer phone must be verified with Firebase OTP before registration. Existing customer accounts can log in with phone OTP; verified Firebase UIDs link to the existing PostgreSQL customer row, preserving the existing bookings. Google login is for existing accounts with a matching verified Google email. Customer and partner bookings retain server-side ownership and price validation.
 
 ## Production
 

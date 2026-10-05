@@ -42,6 +42,11 @@ function initializeFirebaseAdminApp(environment = process.env, adminSdk = requir
   return adminSdk.apps.find(app => app.name === 'hometake-auth') || adminSdk.initializeApp({ credential: adminSdk.credential.cert(serviceAccount), projectId, storageBucket: bucketName }, 'hometake-auth');
 }
 async function verifyFirebasePhoneToken(idToken, firebaseAuth, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const identity = await verifyFirebasePhoneIdentity(idToken, firebaseAuth, nowSeconds);
+  return identity.phoneNumber;
+}
+
+async function verifyFirebasePhoneIdentity(idToken, firebaseAuth, nowSeconds = Math.floor(Date.now() / 1000)) {
   if (typeof idToken !== 'string' || idToken.length < 100 || idToken.length > 10000 || !firebaseAuth) throw new Error('Firebase phone verification is not configured or token is invalid.');
   const decoded = await firebaseAuth.verifyIdToken(idToken, true);
   const phoneNumber = decoded.phone_number;
@@ -49,7 +54,8 @@ async function verifyFirebasePhoneToken(idToken, firebaseAuth, nowSeconds = Math
   const authTime = Number(decoded.auth_time);
   if (provider !== 'phone' || typeof phoneNumber !== 'string' || !E164_PHONE.test(phoneNumber)) throw new Error('A Firebase-verified phone sign-in is required.');
   if (!Number.isFinite(authTime) || authTime > nowSeconds || nowSeconds - authTime > 15 * 60) throw new Error('Phone verification has expired. Request a new OTP.');
-  return phoneNumber;
+  if (typeof decoded.uid !== 'string' || !decoded.uid.trim()) throw new Error('Firebase phone sign-in did not return a valid user ID.');
+  return { uid: decoded.uid, phoneNumber };
 }
 
 async function verifyFirebaseGoogleToken(idToken, firebaseAuth, nowSeconds = Math.floor(Date.now() / 1000)) {
@@ -62,4 +68,4 @@ async function verifyFirebaseGoogleToken(idToken, firebaseAuth, nowSeconds = Mat
   return { email: decoded.email.trim().toLowerCase(), name: String(decoded.name || '').trim().slice(0, 160) };
 }
 
-module.exports = { E164_PHONE, getFirebaseClientConfig, parseFirebaseServiceAccount, initializeFirebaseAdmin, initializeFirebaseAdminApp, verifyFirebasePhoneToken, verifyFirebaseGoogleToken };
+module.exports = { E164_PHONE, getFirebaseClientConfig, parseFirebaseServiceAccount, initializeFirebaseAdmin, initializeFirebaseAdminApp, verifyFirebasePhoneToken, verifyFirebasePhoneIdentity, verifyFirebaseGoogleToken };

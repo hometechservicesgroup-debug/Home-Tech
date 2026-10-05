@@ -9,7 +9,7 @@ const path = require('path');
 const multer = require('multer');
 const { Pool } = require('pg');
 const SERVICE_OPTIONS = require('./data/service-options');
-const { getFirebaseClientConfig, initializeFirebaseAdmin, verifyFirebasePhoneToken, verifyFirebaseGoogleToken } = require('./firebase-auth');
+const { getFirebaseClientConfig, initializeFirebaseAdmin, verifyFirebasePhoneIdentity, verifyFirebaseGoogleToken } = require('./firebase-auth');
 const { getCloudinaryConfig, createCloudinaryStorage } = require('./cloudinary-storage');
 const { getPhonePeConfig, isPhonePePaymentsEnabled, createPhonePePayment, getPhonePeOrderStatus, newPhonePeOrderId } = require('./phonepe');
 const { DEFAULT_PRICING_CONFIG, validatePricingConfig, calculateCommission } = require('./pricing-config');
@@ -131,7 +131,8 @@ function publicUser(user) {
     name: user.name,
     email: user.email,
     phone: user.phone || '',
-    role: user.role
+    role: user.role,
+    firebaseUid: user.firebase_uid || null
   };
 }
 
@@ -250,12 +251,12 @@ async function requireAdmin(req, res, next) {
   }
 }
 
-async function issueVerifyTicket(identifier) {
+async function issueVerifyTicket(identifier, firebaseUid = null) {
   const token = crypto.randomBytes(24).toString('hex');
   await query(
-    `INSERT INTO verification_tickets (token, identifier, expires_at)
-     VALUES ($1, $2, NOW() + INTERVAL '15 minutes')`,
-    [token, identifier.trim().toLowerCase()]
+    `INSERT INTO verification_tickets (token, identifier, firebase_uid, expires_at)
+     VALUES ($1, $2, $3, NOW() + INTERVAL '15 minutes')`,
+    [token, identifier.trim().toLowerCase(), firebaseUid]
   );
   return token;
 }
@@ -263,10 +264,10 @@ async function consumeVerifyTicket(token, identifier) {
   const result = await query(
     `DELETE FROM verification_tickets
      WHERE token = $1 AND identifier = $2 AND expires_at > NOW()
-     RETURNING token`,
+     RETURNING firebase_uid`,
     [token, identifier.trim().toLowerCase()]
   );
-  return result.rowCount === 1;
+  return result.rows[0] ? result.rows[0].firebase_uid || '' : null;
 }
 
 const DAILY_LIMIT = 3;
@@ -488,12 +489,82 @@ app.post('/api/auth/otp-attempt', async (req, res) => {
 app.post('/api/auth/verify-firebase-phone', async (req, res) => {
   try {
     if (!otpEnabled) return res.status(503).json({ error: 'Firebase phone OTP is not configured on the backend yet.' });
-    const phone = await verifyFirebasePhoneToken(req.body?.idToken, firebaseAuth);
-    const verifyToken = await issueVerifyTicket(phone);
-    return res.json({ success: true, verifyToken, identifier: phone });
+    const identity = await verifyFirebasePhoneIdentity(req.body?.idToken, firebaseAuth);
+    const verifyToken = await issueVerifyTicket(identity.phoneNumber, identity.uid);
+    return res.json({ success: true, verifyToken, identifier: identity.phoneNumber });
   } catch (err) {
     console.error('Firebase phone verification failed:', { code: err.code || 'invalid-token' });
     return res.status(401).json({ error: 'Phone OTP verification failed or expired. Please request a new OTP and try again.' });
+  }
+});
+
+app.post('/api/auth/phone-login', async (req, res) => {
+  let client;
+  let identity = null;
+  try {
+    if (!otpEnabled) return res.status(503).json({ error: 'Firebase phone OTP is not configured on the backend yet.' });
+    identity = await verifyFirebasePhoneIdentity(req.body?.idToken, firebaseAuth);
+    const digits = identity.phoneNumber.replace(/\D/g, '');
+    const possiblePhoneDigits = [digits, digits.slice(-10)];
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`firebase-phone:${digits}`]);
+    const byUid = await client.query('SELECT * FROM users WHERE firebase_uid = $1 FOR UPDATE', [identity.uid]);
+    let user = byUid.rows[0] || null;
+    if (user && user.role !== 'customer') {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'This phone is linked to a non-customer account. Use its existing sign-in option.' });
+    }
+    if (user && String(user.phone || '').replace(/\D/g, '') !== digits) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Your verified phone number changed. Contact support to safely update this account.' });
+    }
+    if (!user) {
+      const match = await client.query(
+        `SELECT * FROM users
+         WHERE REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '', 'g') = ANY($1::text[])
+         ORDER BY id FOR UPDATE`,
+        [possiblePhoneDigits]
+      );
+      if (match.rows.length > 1) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'This phone matches multiple customer records. Contact support so the existing booking history stays linked correctly.' });
+      }
+      user = match.rows[0] || null;
+      if (user && user.role !== 'customer') {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'This phone is linked to a non-customer account. Use its existing sign-in option.' });
+      }
+      if (!user) {
+        await client.query('COMMIT');
+        const verifyToken = await issueVerifyTicket(identity.phoneNumber, identity.uid);
+        return res.json({ success: true, needsProfile: true, verifyToken, identifier: identity.phoneNumber });
+      }
+      const linked = await client.query(
+        `UPDATE users SET firebase_uid = $1, firebase_phone_verified_at = NOW(), phone = $2, updated_at = NOW()
+         WHERE id = $3 AND (firebase_uid IS NULL OR firebase_uid = $1)
+         RETURNING *`,
+        [identity.uid, identity.phoneNumber, user.id]
+      );
+      if (!linked.rows[0]) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'This customer account is already linked to another verified phone identity. Contact support.' });
+      }
+      user = linked.rows[0];
+    }
+    const token = makeToken();
+    await client.query(`INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')`, [token, user.id]);
+    await client.query('COMMIT');
+    return res.json({ success: true, needsProfile: false, token, user: publicUser(user) });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('Firebase phone login failed:', { code: err.code || 'phone-login-error' });
+    if (identity && !err.code) return res.status(500).json({ error: 'Could not open your customer session. Please try again.' });
+    if (err.code === '23505') return res.status(409).json({ error: 'This verified phone identity is linked to another account. Contact support.' });
+    if (identity) return res.status(500).json({ error: 'Could not link the verified phone to your customer account. Please try again.' });
+    return res.status(401).json({ error: 'Phone sign-in could not be verified. Request a new code and try again.' });
+  } finally {
+    if (client) client.release();
   }
 });
 
@@ -518,7 +589,8 @@ app.post('/api/auth/register', async (req, res) => {
     if (!verifyToken || !identifier || !/^\+91\d{10}$/.test(String(identifier)) || !name || !email || !password || typeof password !== 'string') {
       return res.status(400).json({ error: 'Missing required fields.' });
     }
-    if (!await consumeVerifyTicket(verifyToken, identifier)) {
+    const firebaseUid = await consumeVerifyTicket(verifyToken, identifier);
+    if (!firebaseUid) {
       return res.status(401).json({ error: 'Verification expired or invalid.' });
     }
     const normalizedEmail = stripMdash(email).toLowerCase();
@@ -526,18 +598,22 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Enter a valid name and email, and a password between 6 and 200 characters.' });
     }
     const normalizedRole = role === 'partner' ? 'partner' : 'customer';
-    const duplicatePhone = await query(`SELECT 1 FROM users WHERE REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '', 'g') = $1 LIMIT 1`, [identifier.replace(/\D/g, '')]);
-    if (duplicatePhone.rows.length) return res.status(409).json({ error: 'An account with this phone number already exists. Please log in instead.' });
     const passwordHash = bcrypt.hashSync(password, 10);
     const phoneValue = String(identifier);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`firebase-phone:${phoneValue.replace(/\D/g, '')}`]);
+      const duplicatePhone = await client.query(`SELECT id FROM users WHERE REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '', 'g') = ANY($1::text[]) LIMIT 1`, [[phoneValue.replace(/\D/g, ''), phoneValue.replace(/\D/g, '').slice(-10)]]);
+      if (duplicatePhone.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'An account with this phone number already exists. Please use Phone OTP login.' });
+      }
       const userResult = await client.query(
-        `INSERT INTO users (name, email, phone, password_hash, role, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+        `INSERT INTO users (name, email, phone, password_hash, role, firebase_uid, firebase_phone_verified_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), NOW())
          RETURNING *`,
-        [name.trim(), normalizedEmail, phoneValue, passwordHash, normalizedRole]
+        [name.trim(), normalizedEmail, phoneValue, passwordHash, normalizedRole, firebaseUid]
       );
       const user = userResult.rows[0];
       if (normalizedRole === 'partner') {
