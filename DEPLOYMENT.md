@@ -7,7 +7,7 @@ This repository keeps the `Initial stable version` Git rollback point and connec
 - Render hosts the Node API and connects to the existing PostgreSQL database.
 - Netlify hosts the customer page, admin page, and partner page.
 - Firebase Authentication sends phone sign-in codes and supports Google sign-in. Firebase Admin verifies sign-in tokens on the backend.
-- Firebase Storage stores new images and videos in the configured bucket. Existing `/uploads/...` links remain readable during migration.
+- Cloudinary stores new service images, gallery photos/videos, logos, and partner photos. Existing `/uploads/...` links remain readable during migration.
 - PhonePe is the only payment gateway used for customer bookings and partner wallet recharge.
 
 ## Render environment variables
@@ -20,7 +20,7 @@ Set these in Render → `hometech-api` → Environment. Never put service secret
 | `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`, `FIREBASE_APP_ID` | Firebase Web App settings. The web API key is a client config value; the other server values stay on Render. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Full Firebase service account JSON. Secret; Render only. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64` | Optional Base64-encoded service-account JSON. Use this if Render corrupts multiline JSON; secret, Render only. When set, it takes precedence. |
-| `FIREBASE_STORAGE_BUCKET` | Exact bucket name from Firebase Console → Storage. |
+| `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Cloudinary account credentials. Keep the API secret on Render only. |
 | `PHONEPE_ENV` | `sandbox` for local testing. On the live Render service set `production` only after PhonePe provides production PG credentials and approves UAT. The live API intentionally disables sandbox checkout. |
 | `PHONEPE_CLIENT_ID`, `PHONEPE_CLIENT_VERSION`, `PHONEPE_CLIENT_SECRET` | PhonePe PG credentials. Keep the secret on Render only. |
 | `PUBLIC_SITE_URL` | Exact HTTPS Netlify site URL, such as `https://your-site.netlify.app`. |
@@ -36,12 +36,12 @@ PhonePe production access requires a merchant account, UAT and PhonePe approval.
 1. In Firebase Console → Authentication → Sign-in method, enable **Phone** and **Google**.
 2. In Authentication settings → Authorized domains, add the exact Netlify hostname. Add `localhost` only for local testing. Confirm India is allowed under the phone SMS region policy.
 3. Real Firebase phone SMS requires the project to meet Firebase billing, quota and region requirements. Google sign-in does not send phone OTPs. Google login only works for an existing Home-Tech account whose email matches the verified Google email; new accounts still register with phone OTP.
-4. Create or select the Firebase Storage bucket and a service account with the required storage access. Put the full service account JSON and bucket name in Render. If multiline JSON is rejected, set `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64` instead; Base64-encode the JSON file contents locally, paste only the encoded value in Render, and leave the raw variable empty. Do not share either value in chat or commit it. Admin service photos, gallery photos/videos, site logo, and partner application photos upload to that bucket. Each current upload is capped at 50 MB. Firebase Storage is not unlimited free storage; current Firebase setup requires the Blaze plan and usage charges may apply, especially for video and downloads. Review [Firebase plans](https://firebase.google.com/docs/projects/billing/firebase-pricing-plans) and [Storage pricing](https://firebase.google.com/pricing).
-5. After deploying, `/health` should show `otpEnabled: true`, `otpProvider: "firebase"`, and `cloudStorageEnabled: true`.
+4. Create a Cloudinary account and set `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` in Render. New media uploads go to Cloudinary; current file limit is 50 MB. The free plan currently includes 25 monthly credits shared across storage, bandwidth, and transformations, so monitor usage and review [Cloudinary pricing](https://cloudinary.com/pricing). Do not put the API secret in Netlify, HTML, chat, or source control.
+5. Firebase service-account JSON remains on Render for backend token verification and login; it is no longer used for media storage. After deploying, `/health` should show `otpEnabled: true`, `otpProvider: "firebase"`, and `cloudStorageEnabled: true` (Cloudinary configured).
 
 If phone OTP fails, the on-page message identifies common causes. Also inspect Firebase Authentication usage/quota, SMS region policy, billing, reCAPTCHA, and whether the current Netlify domain is authorized. Firebase test phone numbers do not send actual SMS.
 
-New admin service images, gallery images/videos, logos and partner photos go to Firebase Storage. Uploads currently have a 50 MB per-file limit. Old local upload files are still ephemeral on Render unless copied to persistent storage.
+New admin service images, gallery images/videos, logos and partner photos go to Cloudinary. Uploads currently have a 50 MB per-file limit. Old local upload files are still ephemeral on Render unless copied to persistent storage.
 
 ## Netlify
 

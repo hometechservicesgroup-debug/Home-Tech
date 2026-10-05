@@ -1,6 +1,6 @@
 # Home-Tech backend
 
-The backend uses the existing PostgreSQL database, Firebase Phone Authentication and Google sign-in, Firebase Storage for new media, and PhonePe for customer booking payments and partner wallet recharge.
+The backend uses the existing PostgreSQL database, Firebase Phone Authentication and Google sign-in, Cloudinary for new media, and PhonePe for customer booking payments and partner wallet recharge.
 
 ## Local development
 
@@ -16,4 +16,4 @@ The customer phone must be verified with Firebase OTP before registration. Googl
 
 Render hosts this service. Keep the existing PostgreSQL connection; migrations are additive. Set all Firebase, PhonePe, CORS and admin environment variables in Render. Never put Firebase service account JSON or PhonePe client secret into a public HTML file, Netlify variable, or chat. Real SMS depends on Firebase Phone Authentication setup, billing, region policy, quota and authorized domains. PhonePe production checkout requires PhonePe merchant approval and production PG credentials after UAT.
 
-New uploads use Firebase Storage when configured; each file is limited to 50 MB. The Firebase bucket is not unlimited free storage and may incur storage or download charges. Existing `/uploads` files use the local Render filesystem and need migration to durable storage.
+New uploads use Cloudinary when configured; each file is limited to 50 MB. The current Cloudinary free plan has a shared monthly credit allowance for storage, bandwidth and transformations. Existing `/uploads` files use the local Render filesystem and need migration to durable storage.

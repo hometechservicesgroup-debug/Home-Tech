@@ -9,8 +9,8 @@ const path = require('path');
 const multer = require('multer');
 const { Pool } = require('pg');
 const SERVICE_OPTIONS = require('./data/service-options');
-const { getFirebaseClientConfig, initializeFirebaseAdmin, initializeFirebaseAdminApp, verifyFirebasePhoneToken, verifyFirebaseGoogleToken } = require('./firebase-auth');
-const { createFirebaseStorage } = require('./firebase-storage');
+const { getFirebaseClientConfig, initializeFirebaseAdmin, verifyFirebasePhoneToken, verifyFirebaseGoogleToken } = require('./firebase-auth');
+const { getCloudinaryConfig, createCloudinaryStorage } = require('./cloudinary-storage');
 const { getPhonePeConfig, isPhonePePaymentsEnabled, createPhonePePayment, getPhonePeOrderStatus, newPhonePeOrderId } = require('./phonepe');
 const { DEFAULT_PRICING_CONFIG, validatePricingConfig, calculateCommission } = require('./pricing-config');
 
@@ -31,21 +31,23 @@ if (!DATABASE_URL) {
 
 const firebaseClientConfig = getFirebaseClientConfig(process.env);
 let firebaseAuth = null;
-let firebaseStorage = null;
+let mediaStorage = null;
 let firebaseConfigStatus = 'missing';
 try {
   firebaseAuth = initializeFirebaseAdmin(process.env);
-  const firebaseStorageApp = initializeFirebaseAdminApp(process.env);
-  if (firebaseStorageApp && process.env.FIREBASE_STORAGE_BUCKET) {
-    const { getStorage } = require('firebase-admin/storage');
-    firebaseStorage = createFirebaseStorage(getStorage(firebaseStorageApp).bucket(process.env.FIREBASE_STORAGE_BUCKET.trim()));
-  }
   firebaseConfigStatus = firebaseAuth ? 'ready' : 'missing';
 } catch (err) {
   firebaseAuth = null;
-  firebaseStorage = null;
   firebaseConfigStatus = 'invalid';
   console.error('Firebase configuration error:', err.message);
+}
+const cloudinaryConfig = getCloudinaryConfig(process.env);
+if (cloudinaryConfig) {
+  try {
+    mediaStorage = createCloudinaryStorage(cloudinaryConfig);
+  } catch (err) {
+    console.error('Cloud media storage configuration error:', err.message);
+  }
 }
 const otpEnabled = Boolean(firebaseClientConfig && firebaseAuth);
 const phonePeConfig = getPhonePeConfig(process.env);
@@ -447,21 +449,21 @@ app.get('/partner.html', (_req, res) => res.sendFile(path.join(__dirname, 'partn
 app.get('/health', async (_req, res) => {
   try {
     await query('SELECT 1');
-    return res.json({ ok: true, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', firebaseConfigStatus, cloudStorageEnabled: Boolean(firebaseStorage), database: 'connected' });
+    return res.json({ ok: true, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', firebaseConfigStatus, mediaStorageProvider: 'cloudinary', cloudStorageEnabled: Boolean(mediaStorage), database: 'connected' });
   } catch (err) {
     console.error('/health error:', err.message);
-    return res.status(503).json({ ok: false, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', firebaseConfigStatus, cloudStorageEnabled: Boolean(firebaseStorage), database: 'disconnected' });
+    return res.status(503).json({ ok: false, paymentsEnabled, paymentProvider, paymentMode, otpEnabled, otpProvider: 'firebase', firebaseConfigStatus, mediaStorageProvider: 'cloudinary', cloudStorageEnabled: Boolean(mediaStorage), database: 'disconnected' });
   }
 });
 
 async function storeUploadedFile(file, folder) {
   if (!file) return null;
-  if (!firebaseStorage) {
-    const error = new Error('Cloud uploads are not configured. Set Firebase Storage bucket and service account in Render.');
+  if (!mediaStorage) {
+    const error = new Error('Cloud uploads are not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET in Render.');
     error.statusCode = 503;
     throw error;
   }
-  return firebaseStorage.upload(file, folder);
+  return mediaStorage.upload(file, folder);
 }
 
 app.get('/api/auth/firebase-config', (_req, res) => {
@@ -851,12 +853,12 @@ app.post('/api/admin/services/:id/image', requireAdmin, upload.single('image'), 
       [storedImage.url, req.params.id]
     );
     if (!result.rows[0]) {
-      await firebaseStorage.removeUrl(storedImage.url);
+      await mediaStorage.removeUrl(storedImage.url);
       return res.status(404).json({ error: 'Service not found.' });
     }
     return res.json({ success: true, image: result.rows[0].image_url });
   } catch (err) {
-    if (storedImage) await firebaseStorage.removeUrl(storedImage.url);
+    if (storedImage) await mediaStorage.removeUrl(storedImage.url);
     console.error('service image upload error:', err.message);
     return res.status(500).json({ error: 'Could not save service image.' });
   }
@@ -928,7 +930,7 @@ app.delete('/api/admin/gallery/:id', requireAdmin, async (req, res) => {
   try {
     const result = await query('DELETE FROM gallery_items WHERE id = $1 RETURNING src', [req.params.id]);
     if (!result.rows[0]) return res.status(404).json({ error: 'Gallery item not found.' });
-    if (firebaseStorage && await firebaseStorage.removeUrl(result.rows[0].src)) return res.json({ success: true });
+    if (mediaStorage && await mediaStorage.removeUrl(result.rows[0].src)) return res.json({ success: true });
     const filename = path.basename(result.rows[0].src || '');
     if (filename && filename !== '.' && filename !== path.basename(uploadDir)) {
       fs.unlink(path.join(uploadDir, filename), () => {});
