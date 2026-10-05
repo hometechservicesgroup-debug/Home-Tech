@@ -225,6 +225,12 @@ function defaultApiBase(){
 function escapeHtml(value){
   return String(value ?? '').replace(/[&<>"']/g, char=>({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 }
+function resolveMediaUrl(value){
+  const src=String(value||'');
+  if(/^https:\/\/(?:res\.cloudinary\.com|firebasestorage\.googleapis\.com)\//i.test(src)) return src;
+  if(/^\/uploads\/[A-Za-z0-9._/-]+$/.test(src)) return `${session.apiBase}${src}`;
+  return '';
+}
 function customerWhatsAppLink(booking){
   const number = String(booking.phone || '').replace(/\D/g,'');
   if(number.length < 10) return '';
@@ -458,7 +464,7 @@ async function loadPrices(){
     list.innerHTML = services.map(s => `
       <div class="price-row" style="flex-wrap:wrap;">
         <div class="row" style="flex:1; min-width:200px;">
-          ${s.image ? `<img src="${escapeHtml(s.image.startsWith('https://firebasestorage.googleapis.com/') ? s.image : session.apiBase+s.image)}" style="width:40px;height:36px;object-fit:cover;border-radius:8px;">` : ''}
+          ${resolveMediaUrl(s.image) ? `<img src="${escapeHtml(resolveMediaUrl(s.image))}" style="width:40px;height:36px;object-fit:cover;border-radius:8px;">` : ''}
           <span>${escapeHtml(s.name)}${s.custom ? ' <span style="font-size:10px; color:var(--indigo);">(custom)</span>' : ''}<small style="display:block;color:var(--ink2);">Set each customer option price</small></span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;width:100%;">
@@ -571,8 +577,8 @@ async function loadGallery(){
     grid.innerHTML = items.map(g => `
       <div class="gallery-item">
         ${g.type==='video'
-          ? `<video src="${escapeHtml(g.src.startsWith('https://firebasestorage.googleapis.com/') ? g.src : session.apiBase+g.src)}" class="thumb" controls></video>`
-          : `<img src="${escapeHtml(g.src.startsWith('https://firebasestorage.googleapis.com/') ? g.src : session.apiBase+g.src)}" class="thumb" alt="${escapeHtml(g.title)}">`}
+          ? `<video src="${escapeHtml(resolveMediaUrl(g.src))}" class="thumb" controls></video>`
+          : `<img src="${escapeHtml(resolveMediaUrl(g.src))}" class="thumb" alt="${escapeHtml(g.title)}">`}
         <p style="font-size:12.5px; margin:8px 0 2px;">${escapeHtml(g.title)}</p>
         <p style="font-size:11px; color:var(--ink2); margin:0 0 8px;">${escapeHtml(g.category||'')}</p>
         <button class="action btn-reject" onclick="deleteGalleryItem('${escapeHtml(g.id)}')">Delete</button>

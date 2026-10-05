@@ -1482,6 +1482,12 @@ async function finalizeBooking(details, paymentMethod, payment={}){
 function escapeHtml(value){
   return String(value ?? '').replace(/[&<>"']/g, char=>({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 }
+function resolveMediaUrl(value){
+  const src=String(value||'');
+  if(/^https:\/\/(?:res\.cloudinary\.com|firebasestorage\.googleapis\.com)\//i.test(src)) return src;
+  if(/^\/uploads\/[A-Za-z0-9._/-]+$/.test(src)) return `${OTP_API_BASE}${src}`;
+  return '';
+}
 function inlineArg(value){ return escapeHtml(JSON.stringify(String(value ?? ''))); }
 function formatDate(d){ if(!d) return ''; return new Date(d+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'}); }
 
@@ -2275,7 +2281,7 @@ async function applyPriceOverrides(){
       if(s.price !== item.price){ s.price = item.price; changed = true; }
       if(Array.isArray(item.options) && JSON.stringify(s.opts)!==JSON.stringify(item.options)){ s.opts = item.options; changed = true; }
       if(item.optionPrices && JSON.stringify(s.optionPrices||{})!==JSON.stringify(item.optionPrices)){ s.optionPrices = item.optionPrices; changed = true; }
-      const resolvedImage = item.image && item.image.startsWith('https://firebasestorage.googleapis.com/') ? item.image : item.image && /^\/uploads\/[A-Za-z0-9._-]+$/.test(item.image) ? `${OTP_API_BASE}${item.image}` : '';
+      const resolvedImage = resolveMediaUrl(item.image);
       if(resolvedImage && s.customImage !== resolvedImage){ s.customImage = resolvedImage; changed = true; }
     });
     // Remove any custom services the admin has since deleted
@@ -2310,10 +2316,10 @@ async function applyBrandingSettings(){
       const footerBrand = document.getElementById('footerBrandName');
       if(footerBrand) footerBrand.textContent = settings.siteName;
     }
-    if(settings.logoUrl && (settings.logoUrl.startsWith('https://firebasestorage.googleapis.com/') || /^\/uploads\/[A-Za-z0-9._-]+$/.test(settings.logoUrl))){
+    const logoUrl = resolveMediaUrl(settings.logoUrl);
+    if(logoUrl){
       const badge = document.getElementById('logoBadge');
-      const logo = settings.logoUrl.startsWith('https://firebasestorage.googleapis.com/') ? settings.logoUrl : `${OTP_API_BASE}${settings.logoUrl}`;
-      if(badge) badge.innerHTML = `<img src="${escapeHtml(logo)}" class="w-full h-full object-cover" alt="logo">`;
+      if(badge) badge.innerHTML = `<img src="${escapeHtml(logoUrl)}" class="w-full h-full object-cover" alt="logo">`;
     }
   } catch(e){ /* no backend yet — keep default branding */ }
 }
