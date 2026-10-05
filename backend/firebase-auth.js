@@ -8,8 +8,8 @@ function getFirebaseClientConfig(environment = process.env) {
 
 function parseFirebaseServiceAccount(environment = process.env) {
   const projectId = String(environment.FIREBASE_PROJECT_ID || '').trim();
-  const encoded = String(environment.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 || '').trim();
-  const raw = String(environment.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+  const encoded = String(environment.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 || '').replace(/\s/g, '');
+  const raw = String(environment.FIREBASE_SERVICE_ACCOUNT_JSON || '').replace(/^\uFEFF/, '').trim();
   if (!projectId || (!encoded && !raw)) return null;
   let source = raw;
   if (encoded) {
@@ -21,17 +21,39 @@ function parseFirebaseServiceAccount(environment = process.env) {
   catch { throw new Error(`${encoded ? 'FIREBASE_SERVICE_ACCOUNT_JSON_BASE64' : 'FIREBASE_SERVICE_ACCOUNT_JSON'} must contain valid Firebase service account JSON${encoded ? ' encoded as Base64' : ''}.`); }
   if (!serviceAccount || typeof serviceAccount !== 'object' || Array.isArray(serviceAccount)) throw new Error('Firebase service account must be a JSON object.');
   if (serviceAccount.project_id !== projectId || !serviceAccount.client_email || !serviceAccount.private_key) throw new Error('Firebase service account project or credentials do not match FIREBASE_PROJECT_ID.');
-  serviceAccount.private_key = String(serviceAccount.private_key).replace(/\\n/g, '\n');
+  serviceAccount.private_key = String(serviceAccount.private_key)
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n/g, '\n')
+    .trim();
   return { projectId, serviceAccount };
+}
+
+function getAdminApps(adminSdk) {
+  // firebase-admin v14 exposes named apps through getApps(); the legacy
+  // `apps` property is absent in the modular API.
+  if (typeof adminSdk.getApps === 'function') return adminSdk.getApps();
+  return Array.isArray(adminSdk.apps) ? adminSdk.apps : [];
+}
+
+function getNamedAdminApp(adminSdk) {
+  return getAdminApps(adminSdk).find(app => app.name === 'hometake-auth');
+}
+
+function getAdminAuth(adminSdk, app) {
+  // Prefer modular API; retain compatibility with older namespace SDKs.
+  if (typeof adminSdk.getAuth === 'function') return adminSdk.getAuth(app);
+  if (typeof app.auth === 'function') return app.auth();
+  throw new Error('Firebase Admin Auth is unavailable in this SDK.');
 }
 
 function initializeFirebaseAdmin(environment = process.env, adminSdk = require('firebase-admin')) {
   const credentials = parseFirebaseServiceAccount(environment);
   if (!credentials) return null;
   const { projectId, serviceAccount } = credentials;
-  const existing = adminSdk.apps.find(app => app.name === 'hometake-auth');
+  const existing = getNamedAdminApp(adminSdk);
   const app = existing || adminSdk.initializeApp({ credential: adminSdk.credential.cert(serviceAccount), projectId, storageBucket: String(environment.FIREBASE_STORAGE_BUCKET || '').trim() || undefined }, 'hometake-auth');
-  return app.auth();
+  return getAdminAuth(adminSdk, app);
 }
 
 function initializeFirebaseAdminApp(environment = process.env, adminSdk = require('firebase-admin')) {
@@ -39,7 +61,7 @@ function initializeFirebaseAdminApp(environment = process.env, adminSdk = requir
   const bucketName = String(environment.FIREBASE_STORAGE_BUCKET || '').trim();
   if (!credentials || !bucketName) return null;
   const { projectId, serviceAccount } = credentials;
-  return adminSdk.apps.find(app => app.name === 'hometake-auth') || adminSdk.initializeApp({ credential: adminSdk.credential.cert(serviceAccount), projectId, storageBucket: bucketName }, 'hometake-auth');
+  return getNamedAdminApp(adminSdk) || adminSdk.initializeApp({ credential: adminSdk.credential.cert(serviceAccount), projectId, storageBucket: bucketName }, 'hometake-auth');
 }
 async function verifyFirebasePhoneToken(idToken, firebaseAuth, nowSeconds = Math.floor(Date.now() / 1000)) {
   const identity = await verifyFirebasePhoneIdentity(idToken, firebaseAuth, nowSeconds);

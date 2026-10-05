@@ -29,6 +29,25 @@ test('Admin SDK initialization checks that service account belongs to configured
   assert.throws(() => initializeFirebaseAdmin({ FIREBASE_PROJECT_ID: 'another-project', FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify(serviceAccount) }, sdk), /do not match/);
 });
 
+test('Admin SDK initialization uses the modular getApps/getAuth API', () => {
+  const auth = { verifyIdToken: async () => ({}) };
+  const apps = [];
+  const sdk = {
+    getApps: () => apps,
+    getAuth: app => app.authInstance,
+    credential: { cert: value => value },
+    initializeApp(options, name) {
+      const app = { name, options, authInstance: auth };
+      apps.push(app);
+      return app;
+    }
+  };
+  const environment = { FIREBASE_PROJECT_ID: 'home-tech', FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify(serviceAccount) };
+  assert.equal(initializeFirebaseAdmin(environment, sdk), auth);
+  assert.equal(initializeFirebaseAdmin(environment, sdk), auth);
+  assert.equal(apps.length, 1);
+});
+
 test('server accepts only fresh Firebase phone sign-in tokens with an E.164 number', async () => {
   const auth = { verifyIdToken: async token => ({
     uid: 'uid-123',

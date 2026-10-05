@@ -491,7 +491,10 @@ app.get('/api/auth/firebase-config', (_req, res) => {
 
 app.post('/api/auth/otp-attempt', async (req, res) => {
   try {
-    if (!otpEnabled) return res.status(503).json({ error: 'Firebase phone OTP is not configured on the backend yet.' });
+    // Sending the SMS is performed by Firebase Web Auth in the browser. It only
+    // needs the public Web App config; Admin SDK is required later to verify
+    // the ID token and create the trusted Home-Tech session.
+    if (!firebaseClientConfig) return res.status(503).json({ error: 'Firebase phone OTP is not configured on the backend yet.' });
     const phone = String(req.body?.phone || '').trim();
     if (!/^\+91\d{10}$/.test(phone)) return res.status(400).json({ error: 'Enter a valid Indian mobile number.' });
     const limit = await checkAndIncrementOtpLimit(phone);
