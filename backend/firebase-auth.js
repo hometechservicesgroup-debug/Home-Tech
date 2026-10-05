@@ -29,39 +29,59 @@ function parseFirebaseServiceAccount(environment = process.env) {
   return { projectId, serviceAccount };
 }
 
-function getAdminApps(adminSdk) {
-  // firebase-admin v14 exposes named apps through getApps(); the legacy
-  // `apps` property is absent in the modular API.
-  if (typeof adminSdk.getApps === 'function') return adminSdk.getApps();
-  return Array.isArray(adminSdk.apps) ? adminSdk.apps : [];
+function getAdminModules(adminSdk) {
+  // firebase-admin v14 documents its modular APIs in these submodules.
+  if (!adminSdk) return { appSdk: require('firebase-admin/app'), authSdk: require('firebase-admin/auth') };
+  // Injected SDKs keep tests simple and support older namespace SDK versions.
+  return { appSdk: adminSdk, authSdk: adminSdk };
 }
 
-function getNamedAdminApp(adminSdk) {
-  return getAdminApps(adminSdk).find(app => app.name === 'hometake-auth');
+function getAdminApps(appSdk) {
+  if (typeof appSdk.getApps === 'function') return appSdk.getApps();
+  return Array.isArray(appSdk.apps) ? appSdk.apps : [];
 }
 
-function getAdminAuth(adminSdk, app) {
+function getNamedAdminApp(appSdk) {
+  return getAdminApps(appSdk).find(app => app.name === 'hometake-auth');
+}
+
+function getAdminAuth(authSdk, app) {
   // Prefer modular API; retain compatibility with older namespace SDKs.
-  if (typeof adminSdk.getAuth === 'function') return adminSdk.getAuth(app);
+  if (typeof authSdk.getAuth === 'function') return authSdk.getAuth(app);
   if (typeof app.auth === 'function') return app.auth();
   throw new Error('Firebase Admin Auth is unavailable in this SDK.');
 }
 
-function initializeFirebaseAdmin(environment = process.env, adminSdk = require('firebase-admin')) {
+function createAdminCredential(appSdk, serviceAccount) {
+  if (typeof appSdk.cert === 'function') return appSdk.cert(serviceAccount);
+  if (appSdk.credential && typeof appSdk.credential.cert === 'function') return appSdk.credential.cert(serviceAccount);
+  throw new Error('Firebase Admin cert() is unavailable in this SDK.');
+}
+
+function initializeAdminApp(appSdk, serviceAccount, projectId, storageBucket) {
+  const options = { credential: createAdminCredential(appSdk, serviceAccount), projectId, storageBucket: storageBucket || undefined };
+  if (typeof appSdk.initializeApp === 'function') return appSdk.initializeApp(options, 'hometake-auth');
+  throw new Error('Firebase Admin initializeApp() is unavailable in this SDK.');
+}
+
+function initializeFirebaseAdmin(environment = process.env, injectedSdk = null) {
   const credentials = parseFirebaseServiceAccount(environment);
   if (!credentials) return null;
   const { projectId, serviceAccount } = credentials;
-  const existing = getNamedAdminApp(adminSdk);
-  const app = existing || adminSdk.initializeApp({ credential: adminSdk.credential.cert(serviceAccount), projectId, storageBucket: String(environment.FIREBASE_STORAGE_BUCKET || '').trim() || undefined }, 'hometake-auth');
-  return getAdminAuth(adminSdk, app);
+  const { appSdk, authSdk } = getAdminModules(injectedSdk);
+  const existing = getNamedAdminApp(appSdk);
+  const bucketName = String(environment.FIREBASE_STORAGE_BUCKET || '').trim();
+  const app = existing || initializeAdminApp(appSdk, serviceAccount, projectId, bucketName);
+  return getAdminAuth(authSdk, app);
 }
 
-function initializeFirebaseAdminApp(environment = process.env, adminSdk = require('firebase-admin')) {
+function initializeFirebaseAdminApp(environment = process.env, injectedSdk = null) {
   const credentials = parseFirebaseServiceAccount(environment);
   const bucketName = String(environment.FIREBASE_STORAGE_BUCKET || '').trim();
   if (!credentials || !bucketName) return null;
   const { projectId, serviceAccount } = credentials;
-  return getNamedAdminApp(adminSdk) || adminSdk.initializeApp({ credential: adminSdk.credential.cert(serviceAccount), projectId, storageBucket: bucketName }, 'hometake-auth');
+  const { appSdk } = getAdminModules(injectedSdk);
+  return getNamedAdminApp(appSdk) || initializeAdminApp(appSdk, serviceAccount, projectId, bucketName);
 }
 async function verifyFirebasePhoneToken(idToken, firebaseAuth, nowSeconds = Math.floor(Date.now() / 1000)) {
   const identity = await verifyFirebasePhoneIdentity(idToken, firebaseAuth, nowSeconds);

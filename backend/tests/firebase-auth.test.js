@@ -35,7 +35,7 @@ test('Admin SDK initialization uses the modular getApps/getAuth API', () => {
   const sdk = {
     getApps: () => apps,
     getAuth: app => app.authInstance,
-    credential: { cert: value => value },
+    cert: value => value,
     initializeApp(options, name) {
       const app = { name, options, authInstance: auth };
       apps.push(app);
