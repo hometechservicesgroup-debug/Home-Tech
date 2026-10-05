@@ -801,6 +801,28 @@ async function loadCustomerBookings(){
     if(currentView==='account' && getSession()?.token===session.token) renderView();
   }
 }
+async function cancelCustomerBooking(bookingId){
+  const booking = customerBookings.find(item=>String(item.id)===String(bookingId));
+  if(!booking) return;
+  const paid = booking.paymentStatus === 'paid';
+  const promptText = paid
+    ? 'Cancel this booking? Your online payment will be marked for refund processing. Please contact support to complete the refund.'
+    : 'Cancel this booking? This cannot be undone.';
+  if(!confirm(promptText)) return;
+  try{
+    const response = await fetch(`${OTP_API_BASE}/api/bookings/${encodeURIComponent(bookingId)}/cancel`, {
+      method:'PATCH', headers:authHeaders()
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || 'Could not cancel this booking.');
+    booking.status = data.status;
+    booking.paymentStatus = data.paymentStatus;
+    renderView();
+    if(data.message) alert(data.message);
+  } catch(error){
+    alert(error.message || 'Could not cancel this booking. Please try again.');
+  }
+}
 async function restoreSession(){
   const session = getSession();
   if(!session?.token) return;
@@ -1878,10 +1900,11 @@ function renderAccountView(anchor){
         ${bookings.map(b=>`
         <div class="glass rounded-2xl p-4">
           <div class="flex justify-between items-start mb-2"><h4 class="text-white text-[14px] font-medium">${b.items.map(i=>escapeHtml(i.name)).join(', ')}</h4><span class="text-[11px] text-[var(--ink-2)]">${escapeHtml(b.id)}</span></div>
-          <p class="text-[12.5px] text-[var(--ink-2)] mb-3">${escapeHtml(formatDate(b.date))}, ${escapeHtml(b.time || '')} · ₹${Number(b.total)||0} · ${b.paymentStatus==='paid'?'Paid Online':'Pay After Service'}</p>
+          <p class="text-[12.5px] text-[var(--ink-2)] mb-3">${escapeHtml(formatDate(b.date))}, ${escapeHtml(b.time || '')} · ₹${Number(b.total)||0} · ${b.paymentStatus==='paid'?'Paid Online':b.paymentStatus==='refund_pending'?'Refund processing':'Pay After Service'}</p>
           <div class="mb-3">${statusStepper(b.status||'Requested')}</div>
           <div class="flex items-center gap-4">
             <button onclick="openTracking(${inlineArg(b.id)})" class="text-[12.5px] text-[var(--indigo-0)] hover:underline">Track this service →</button>
+            ${['Requested','Confirmed'].includes(b.status||'Requested') && !b.assignedPartner ? `<button onclick="cancelCustomerBooking(${inlineArg(b.id)})" class="text-[12.5px] text-red-400 hover:underline">Cancel booking</button>` : ''}
             ${b.status==='Completed' ? (b.reviewed ? `<span class="text-[12.5px] text-emerald-400">✓ Reviewed</span>` : `<button onclick="openReviewModal(${inlineArg(b.id)})" class="text-[12.5px] text-[var(--amber)] hover:underline">Rate this service →</button>`) : ''}
           </div>
         </div>`).join('')}
@@ -2062,6 +2085,7 @@ function openGalleryItem(i){
 /* ============ BOOKING STATUS TRACKING ============ */
 const STATUS_STAGES = ['Requested','Confirmed','Technician Assigned','On the Way','In Progress','Completed'];
 function statusStepper(status){
+  if(status==='Cancelled') return '<p class="text-[12.5px] text-red-400 font-medium">Booking cancelled</p>';
   const idx = Math.max(0, STATUS_STAGES.indexOf(status));
   return `
   <div class="flex items-center gap-1">

@@ -467,6 +467,15 @@ async function storeUploadedFile(file, folder) {
   return mediaStorage.upload(file, folder);
 }
 
+function mediaUploadFailure(err, fallback) {
+  if (!mediaStorage) return { status: 503, error: 'Cloudinary is not configured on the API. Add CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET in Render Environment, then redeploy.' };
+  if (err && err.statusCode) return { status: err.statusCode, error: err.message || fallback };
+  if (/cloudinary upload failed/i.test(String(err && err.message))) {
+    return { status: 502, error: 'Cloudinary rejected the upload. Check the Cloudinary cloud name/API key/secret in Render and retry.' };
+  }
+  return { status: 500, error: fallback };
+}
+
 app.get('/api/auth/firebase-config', (_req, res) => {
   if (!firebaseClientConfig) return res.status(503).json({ error: 'Firebase phone authentication is not configured on the backend.' });
   return res.json(firebaseClientConfig);
@@ -887,7 +896,8 @@ app.post('/api/admin/services', requireAdmin, upload.single('image'), async (req
     return res.json({ success: true, item: { id: result.rows[0].slug || String(result.rows[0].id), ...result.rows[0] } });
   } catch (err) {
     console.error('admin services error:', err.message);
-    return res.status(500).json({ error: 'Could not save service.' });
+    const failure = mediaUploadFailure(err, 'Could not save service.');
+    return res.status(failure.status).json({ error: failure.error });
   }
 });
 
@@ -936,7 +946,8 @@ app.post('/api/admin/services/:id/image', requireAdmin, upload.single('image'), 
   } catch (err) {
     if (storedImage) await mediaStorage.removeUrl(storedImage.url);
     console.error('service image upload error:', err.message);
-    return res.status(500).json({ error: 'Could not save service image.' });
+    const failure = mediaUploadFailure(err, 'The photo could not be saved. Check the API logs and database connection.');
+    return res.status(failure.status).json({ error: failure.error });
   }
 });
 
@@ -998,7 +1009,8 @@ app.post('/api/admin/gallery', requireAdmin, upload.single('file'), async (req, 
     return res.json({ success: true, item: result.rows[0] });
   } catch (err) {
     console.error('gallery upload error:', err.message);
-    return res.status(500).json({ error: 'Could not upload gallery item.' });
+    const failure = mediaUploadFailure(err, 'Could not upload gallery item.');
+    return res.status(failure.status).json({ error: failure.error });
   }
 });
 
@@ -1053,7 +1065,8 @@ app.post('/api/admin/settings', requireAdmin, upload.single('logo'), async (req,
     return res.json({ success: true });
   } catch (err) {
     console.error('settings save error:', err.message);
-    return res.status(500).json({ error: 'Could not save settings.' });
+    const failure = mediaUploadFailure(err, 'Could not save settings.');
+    return res.status(failure.status).json({ error: failure.error });
   }
 });
 
@@ -1087,7 +1100,8 @@ app.post('/api/partners/apply', requireSession, upload.single('photo'), async (r
     return res.json({ success: true, status: partner ? partner.status : 'pending' });
   } catch (err) {
     console.error('partner apply error:', err.message);
-    return res.status(500).json({ error: 'Could not save partner application.' });
+    const failure = mediaUploadFailure(err, 'Could not save partner application.');
+    return res.status(failure.status).json({ error: failure.error });
   }
 });
 
@@ -1354,6 +1368,40 @@ app.get('/api/bookings/my', requireSession, async (req, res) => {
   } catch (err) {
     console.error('customer bookings error:', err.message);
     return res.status(500).json({ error: 'Could not load your bookings.' });
+  }
+});
+
+app.patch('/api/bookings/:id/cancel', requireSession, async (req, res) => {
+  if (req.user.role !== 'customer') return res.status(403).json({ error: 'Customer account required.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query('SELECT * FROM bookings WHERE id = $1 FOR UPDATE', [req.params.id]);
+    const booking = result.rows[0];
+    if (!booking || Number(booking.customer_id) !== Number(req.user.id)) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Booking not found for this account.' });
+    }
+    if (!['Requested', 'Confirmed'].includes(booking.status) || booking.partner_id) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This booking can no longer be cancelled online. Please contact support for help.' });
+    }
+    const updated = await client.query(
+      `UPDATE bookings SET status = 'Cancelled',
+       payment_status = CASE WHEN payment_status = 'paid' THEN 'refund_pending' ELSE payment_status END,
+       updated_at = NOW() WHERE id = $1 RETURNING id, status, payment_status`,
+      [req.params.id]
+    );
+    await client.query('COMMIT');
+    const row = updated.rows[0];
+    return res.json({ success: true, bookingId: row.id, status: row.status, paymentStatus: row.payment_status,
+      message: row.payment_status === 'refund_pending' ? 'Booking cancelled. Your online payment refund needs support processing; please contact Home-Tech support.' : 'Booking cancelled.' });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('customer booking cancellation error:', err.message);
+    return res.status(500).json({ error: 'Could not cancel this booking. Please try again or contact support.' });
+  } finally {
+    client.release();
   }
 });
 

@@ -317,7 +317,7 @@ function renderBookings(bookings, expandedOrders = new Set()){
         <span class="id">${escapeHtml(b.id)}</span>
       </div>
       <div class="meta">${escapeHtml(b.name || '')} · ${escapeHtml(b.phone || '')} · ${escapeHtml(b.email || '')} · ${escapeHtml(b.address || '')}, ${escapeHtml(b.city || '')} ${escapeHtml(b.pin || '')}<br>
-        ${escapeHtml(b.date || '')} · ${escapeHtml(b.time || '')} · ₹${Number(b.total)||0} · ${b.paymentStatus === 'paid' ? 'Paid Online' : 'Pay After Service'}
+        ${escapeHtml(b.date || '')} · ${escapeHtml(b.time || '')} · ₹${Number(b.total)||0} · ${b.paymentStatus === 'paid' ? 'Paid Online' : b.paymentStatus === 'refund_pending' ? 'Refund processing' : 'Pay After Service'}
         ${b.assignedPartner ? `<br>Assigned to: ${escapeHtml(b.assignedPartner)}` : '<br><em>Not yet assigned</em>'}<br>${customerWhatsAppLink(b)}</div>
       <details data-order-booking="${escapeHtml(b.id)}" ${expandedOrders.has(String(b.id)) ? 'open' : ''}><summary>Full order and bill</summary>
         <div class="meta" style="margin-top:10px;">${(b.items||[]).map(item=>`<div>${escapeHtml(item.name)} · ${escapeHtml(item.opt || item.option || 'Service')} · ${Number(item.qty || item.quantity) || 1} × ₹${Number(item.unitPrice || item.price) || 0} = ₹${Number(item.totalPrice) || 0}</div>`).join('') || 'No service items recorded.'}
@@ -329,6 +329,7 @@ function renderBookings(bookings, expandedOrders = new Set()){
       ${renderLocationCard('Partner live location', b.location)}
       <div class="row">
         <select onchange="updateStatus('${escapeHtml(b.id)}', this.value)">
+          ${b.status === 'Cancelled' ? '<option value="Cancelled" selected>Cancelled</option>' : ''}
           ${STATUS_STAGES.map(s => `<option value="${escapeHtml(s)}" ${s === (b.status || 'Requested') ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
         </select>
         <select id="assign-${escapeHtml(b.id)}">
