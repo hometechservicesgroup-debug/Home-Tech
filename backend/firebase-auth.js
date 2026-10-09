@@ -100,15 +100,27 @@ async function verifyFirebasePhoneIdentity(idToken, firebaseAuth, nowSeconds = M
   return { uid: decoded.uid, phoneNumber };
 }
 
-async function verifyFirebaseGoogleToken(idToken, firebaseAuth, nowSeconds = Math.floor(Date.now() / 1000)) {
-  if (typeof idToken !== 'string' || idToken.length < 100 || idToken.length > 10000 || !firebaseAuth) throw new Error('Firebase Google sign-in is not configured or token is invalid.');
+async function verifyFirebaseSocialToken(idToken, firebaseAuth, expectedProvider, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const providerNames = { 'google.com': 'Google', 'facebook.com': 'Facebook' };
+  const providerName = providerNames[expectedProvider] || 'social';
+  if (typeof idToken !== 'string' || idToken.length < 100 || idToken.length > 10000 || !firebaseAuth) throw new Error(`Firebase ${providerName} sign-in is not configured or token is invalid.`);
   const decoded = await firebaseAuth.verifyIdToken(idToken, true);
   const provider = decoded.firebase && decoded.firebase.sign_in_provider;
   const authTime = Number(decoded.auth_time);
-  if (provider !== 'google.com' || typeof decoded.email !== 'string' || decoded.email_verified !== true) throw new Error('A verified Firebase Google sign-in is required.');
-  if (!Number.isFinite(authTime) || authTime > nowSeconds || nowSeconds - authTime > 15 * 60) throw new Error('Google sign-in has expired. Please sign in again.');
-  if (typeof decoded.uid !== 'string' || !decoded.uid.trim()) throw new Error('Firebase Google sign-in did not return a valid user ID.');
+  if (provider !== expectedProvider || typeof decoded.email !== 'string' || !decoded.email.trim() || (expectedProvider === 'google.com' && decoded.email_verified !== true)) {
+    throw new Error(expectedProvider === 'google.com' ? 'A verified Firebase Google sign-in is required.' : `A valid Firebase ${providerName} sign-in with an email address is required.`);
+  }
+  if (!Number.isFinite(authTime) || authTime > nowSeconds || nowSeconds - authTime > 15 * 60) throw new Error(`${providerName} sign-in has expired. Please sign in again.`);
+  if (typeof decoded.uid !== 'string' || !decoded.uid.trim()) throw new Error(`Firebase ${providerName} sign-in did not return a valid user ID.`);
   return { uid: decoded.uid, email: decoded.email.trim().toLowerCase(), name: String(decoded.name || '').trim().slice(0, 160) };
 }
 
-module.exports = { E164_PHONE, getFirebaseClientConfig, parseFirebaseServiceAccount, initializeFirebaseAdmin, initializeFirebaseAdminApp, verifyFirebasePhoneToken, verifyFirebasePhoneIdentity, verifyFirebaseGoogleToken };
+function verifyFirebaseGoogleToken(idToken, firebaseAuth, nowSeconds = Math.floor(Date.now() / 1000)) {
+  return verifyFirebaseSocialToken(idToken, firebaseAuth, 'google.com', nowSeconds);
+}
+
+function verifyFirebaseFacebookToken(idToken, firebaseAuth, nowSeconds = Math.floor(Date.now() / 1000)) {
+  return verifyFirebaseSocialToken(idToken, firebaseAuth, 'facebook.com', nowSeconds);
+}
+
+module.exports = { E164_PHONE, getFirebaseClientConfig, parseFirebaseServiceAccount, initializeFirebaseAdmin, initializeFirebaseAdminApp, verifyFirebasePhoneToken, verifyFirebasePhoneIdentity, verifyFirebaseSocialToken, verifyFirebaseGoogleToken, verifyFirebaseFacebookToken };

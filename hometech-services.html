@@ -1538,6 +1538,7 @@ function renderLoginView(){
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
       <button onclick="doLogin()" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4">Sign In</button>
       <button onclick="loginWithGoogle()" class="w-full py-3 rounded-full btn-ghost text-white text-[14px] font-medium mb-4">Continue with Google</button>
+      <button onclick="loginWithFacebook()" class="w-full py-3 rounded-full btn-ghost text-white text-[14px] font-medium mb-4">Continue with Facebook</button>
       <p class="text-[13px] text-[var(--ink-2)] text-center">New here? <button onclick="resetAuthState(); go('signup')" class="text-[var(--indigo-0)] hover:underline">Create an account</button></p>
     </div>
   </section>`;
@@ -1590,6 +1591,8 @@ function signupChooseStep(){
       <label class="flex items-start gap-2.5 text-[12px] leading-relaxed text-[var(--ink-2)] mt-2"><input id="signupTermsAccepted" type="checkbox" class="mt-1 accent-indigo-500"><span>I agree to the <a href="/terms-and-conditions.html" target="_blank" rel="noopener" class="text-[var(--indigo-0)] underline">Terms &amp; Conditions</a> and acknowledge the <a href="/privacy-policy.html" target="_blank" rel="noopener" class="text-[var(--indigo-0)] underline">Privacy Policy</a>.</span></label>
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
       <button onclick="finishSignup()" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4 mt-3">Create Account</button>
+      <button onclick="loginWithGoogle()" class="w-full py-3 rounded-full btn-ghost text-white text-[14px] font-medium mb-3">Continue with Google</button>
+      <button onclick="loginWithFacebook()" class="w-full py-3 rounded-full btn-ghost text-white text-[14px] font-medium mb-4">Continue with Facebook</button>
       <p class="text-[13px] text-[var(--ink-2)] text-center">Already have an account? <button onclick="resetAuthState(); go('login')" class="text-[var(--indigo-0)] hover:underline">Log In</button></p>
     </div>
   </section>`;
@@ -1633,24 +1636,24 @@ function signupSetupStep(){
 }
 function authErr(msg){ const e=document.getElementById('authError'); if(e){ e.textContent=msg; e.classList.remove('hidden'); } }
 
-/* Firebase Web SDK modular imports are loaded once and reused for phone and Google sign-in. */
+/* Firebase Web SDK modular imports are loaded once and reused for social sign-in. */
 let homeTechFirebaseModulesPromise=null;
 let homeTechFirebaseRecaptcha=null;
 let homeTechFirebaseObserverStarted=false;
 let homeTechFirebaseUser=null;
-async function getFirebasePhoneAuth(){
+async function getFirebaseAuth(){
   if(!homeTechFirebaseModulesPromise){
     homeTechFirebaseModulesPromise=(async()=>{
       const [appMod,authMod]=await Promise.all([
         import('https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js'),
         import('https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js')
       ]);
-      let app=appMod.getApps().find(item=>item.name==='hometake-phone-auth');
+      let app=appMod.getApps().find(item=>item.name==='hometake-social-auth');
       if(!app){
         const configRes=await fetch(`${OTP_API_BASE}/api/auth/firebase-config`);
         const config=await configRes.json();
-        if(!configRes.ok) throw new Error(config.error||'Firebase phone sign-in is not configured yet.');
-        app=appMod.initializeApp(config,'hometake-phone-auth');
+        if(!configRes.ok) throw new Error(config.error||'Firebase social sign-in is not configured yet.');
+        app=appMod.initializeApp(config,'hometake-social-auth');
       }
       const auth=authMod.getAuth(app);
       await authMod.setPersistence(auth,authMod.browserLocalPersistence);
@@ -1672,28 +1675,34 @@ function signOutFirebasePhoneAuth(){
   if(window.homeTechFirebaseAuth && window.homeTechFirebaseModules){
     return window.homeTechFirebaseModules.signOut(window.homeTechFirebaseAuth).catch(()=>{});
   }
-  if(wasPhoneAuth) return getFirebasePhoneAuth().then(({auth,authMod})=>authMod.signOut(auth)).catch(()=>{});
+  if(wasPhoneAuth) return getFirebaseAuth().then(({auth,authMod})=>authMod.signOut(auth)).catch(()=>{});
   return Promise.resolve();
 }
-async function loginWithGoogle(){
+async function loginWithProvider(providerName){
   const err=document.getElementById('authError'); err.classList.add('hidden');
   try{
-    const {auth,authMod}=await getFirebasePhoneAuth();
-    const provider=new authMod.GoogleAuthProvider();
+    const {auth,authMod}=await getFirebaseAuth();
+    const isFacebook=providerName==='facebook';
+    const provider=isFacebook ? new authMod.FacebookAuthProvider() : new authMod.GoogleAuthProvider();
+    if(isFacebook) provider.addScope('email');
     const result=await authMod.signInWithPopup(auth,provider);
     const idToken=await result.user.getIdToken(true);
-    const res=await fetch(`${OTP_API_BASE}/api/auth/google-login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken})});
+    const res=await fetch(`${OTP_API_BASE}/api/auth/${isFacebook?'facebook':'google'}-login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken})});
     const data=await res.json();
     try{await authMod.signOut(auth);}catch{}
-    if(!res.ok) throw new Error(data.error||'Google sign-in failed.');
+    if(!res.ok) throw new Error(data.error||`${isFacebook?'Facebook':'Google'} sign-in failed.`);
     localStorage.removeItem(LS.firebasePhoneAuth);
     setSession(data.token,data.user); refreshAuthNav(); go('account');
   }catch(error){
     const code=String(error&&error.code||'');
     if(code.includes('popup-closed-by-user')) return;
-    authErr(code.includes('unauthorized-domain')?'Add this website domain in Firebase Authentication → Settings → Authorized domains.':error.message||'Google sign-in failed.');
+    if(code.includes('operation-not-allowed')) authErr(`${providerName==='facebook'?'Facebook':'Google'} sign-in is not enabled in Firebase Authentication yet.`);
+    else if(code.includes('account-exists-with-different-credential')) authErr('This email is already linked to another sign-in method. Log in using that method.');
+    else authErr(code.includes('unauthorized-domain')?'Add this website domain in Firebase Authentication → Settings → Authorized domains.':error.message||`${providerName==='facebook'?'Facebook':'Google'} sign-in failed.`);
   }
 }
+function loginWithGoogle(){ return loginWithProvider('google'); }
+function loginWithFacebook(){ return loginWithProvider('facebook'); }
 function firebaseOtpMessage(error){
   const code=String(error&&error.code||'');
   if(code.includes('too-many-requests')) return 'Too many OTP requests. Please wait before trying again.';
@@ -1724,7 +1733,7 @@ async function sendOtp(purpose, isResend){
   const btn=document.getElementById('sendOtpBtn')||document.getElementById('resendBtn');
   if(btn){btn.textContent='Sending…';btn.disabled=true;}
   try{
-    const {auth,authMod}=await getFirebasePhoneAuth();
+    const {auth,authMod}=await getFirebaseAuth();
     if(homeTechFirebaseRecaptcha){try{homeTechFirebaseRecaptcha.clear();}catch{} homeTechFirebaseRecaptcha=null;}
     const recaptchaContainerId=`firebase-recaptcha-${purpose==='forgot'?'forgot':purpose==='login'?'login':'signup'}`;
     const recaptchaElement=document.getElementById(recaptchaContainerId);

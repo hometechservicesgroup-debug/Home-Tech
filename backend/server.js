@@ -9,7 +9,7 @@ const path = require('path');
 const multer = require('multer');
 const { Pool } = require('pg');
 const SERVICE_OPTIONS = require('./data/service-options');
-const { getFirebaseClientConfig, initializeFirebaseAdmin, verifyFirebasePhoneIdentity, verifyFirebaseGoogleToken } = require('./firebase-auth');
+const { getFirebaseClientConfig, initializeFirebaseAdmin, verifyFirebasePhoneIdentity, verifyFirebaseSocialToken } = require('./firebase-auth');
 const { getCloudinaryConfig, createCloudinaryStorage } = require('./cloudinary-storage');
 const { DEFAULT_PRICING_CONFIG, validatePricingConfig, calculateCommission } = require('./pricing-config');
 
@@ -588,11 +588,11 @@ app.post('/api/auth/phone-login', async (req, res) => {
   }
 });
 
-app.post('/api/auth/google-login', async (req, res) => {
+async function socialLogin(req, res, expectedProvider, providerLabel) {
   let client;
   try {
-    if (!firebaseAuth) return res.status(503).json({ error: 'Firebase sign-in is not configured on this server.' });
-    const identity = await verifyFirebaseGoogleToken(req.body?.idToken, firebaseAuth);
+    if (!firebaseAuth) return res.status(503).json({ error: `Firebase ${providerLabel} sign-in is not configured on this server.` });
+    const identity = await verifyFirebaseSocialToken(req.body?.idToken, firebaseAuth, expectedProvider);
     client = await pool.connect();
     await client.query('BEGIN');
     let result = await client.query('SELECT * FROM users WHERE firebase_uid = $1 OR LOWER(email) = $2 ORDER BY firebase_uid = $1 DESC LIMIT 1', [identity.uid, identity.email]);
@@ -618,13 +618,16 @@ app.post('/api/auth/google-login', async (req, res) => {
     return res.json({ success: true, token, user: publicUser(user) });
   } catch (err) {
     if (client) await client.query('ROLLBACK').catch(() => {});
-    console.error('Firebase Google sign-in failed:', { code: err.code || 'invalid-token' });
+    console.error(`Firebase ${providerLabel} sign-in failed:`, { code: err.code || 'invalid-token' });
     if (err.code === '23505') return res.status(409).json({ error: 'An account with this email already exists. Log in with your email and password.' });
-    return res.status(401).json({ error: 'Google sign-in could not be verified. Please try again.' });
+    return res.status(401).json({ error: err.message || `${providerLabel} sign-in could not be verified. Please try again.` });
   } finally {
     if (client) client.release();
   }
-});
+}
+
+app.post('/api/auth/google-login', (req, res) => socialLogin(req, res, 'google.com', 'Google'));
+app.post('/api/auth/facebook-login', (req, res) => socialLogin(req, res, 'facebook.com', 'Facebook'));
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { verifyToken, identifier, name, email, password, role } = req.body || {};

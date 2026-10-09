@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getFirebaseClientConfig, initializeFirebaseAdmin, verifyFirebasePhoneToken, verifyFirebasePhoneIdentity, verifyFirebaseGoogleToken } = require('../firebase-auth');
+const { getFirebaseClientConfig, initializeFirebaseAdmin, verifyFirebasePhoneToken, verifyFirebasePhoneIdentity, verifyFirebaseGoogleToken, verifyFirebaseFacebookToken } = require('../firebase-auth');
 
 const webConfig = { FIREBASE_API_KEY: 'public-key', FIREBASE_AUTH_DOMAIN: 'home-tech.firebaseapp.com', FIREBASE_PROJECT_ID: 'home-tech', FIREBASE_APP_ID: '1:123:web:abc' };
 const serviceAccount = { project_id: 'home-tech', client_email: 'firebase-admin@home-tech.iam.gserviceaccount.com', private_key: 'private-key' };
@@ -69,6 +69,13 @@ test('server accepts only fresh, verified Firebase Google sign-in tokens', async
   await assert.rejects(verifyFirebaseGoogleToken('x'.repeat(120), { verifyIdToken: async () => ({ email: 'customer@example.com', email_verified: false, auth_time: 990, firebase: { sign_in_provider: 'google.com' } }) }, 1000), /verified Firebase Google/);
   await assert.rejects(verifyFirebaseGoogleToken('x'.repeat(120), { verifyIdToken: async () => ({ email: 'customer@example.com', email_verified: true, auth_time: 990, firebase: { sign_in_provider: 'password' } }) }, 1000), /verified Firebase Google/);
   await assert.rejects(verifyFirebaseGoogleToken('x'.repeat(120), { verifyIdToken: async () => ({ email: 'customer@example.com', email_verified: true, auth_time: 1, firebase: { sign_in_provider: 'google.com' } }) }, 1000), /expired/);
+});
+
+test('server accepts only fresh Firebase Facebook sign-in tokens that include an email', async () => {
+  const auth = { verifyIdToken: async () => ({ uid: 'facebook-uid-456', email: 'customer@example.com', name: 'Customer', auth_time: 990, firebase: { sign_in_provider: 'facebook.com' } }) };
+  assert.deepEqual(await verifyFirebaseFacebookToken('x'.repeat(120), auth, 1000), { uid: 'facebook-uid-456', email: 'customer@example.com', name: 'Customer' });
+  await assert.rejects(verifyFirebaseFacebookToken('x'.repeat(120), { verifyIdToken: async () => ({ uid: 'facebook-uid-456', auth_time: 990, firebase: { sign_in_provider: 'facebook.com' } }) }, 1000), /email address/);
+  await assert.rejects(verifyFirebaseFacebookToken('x'.repeat(120), { verifyIdToken: async () => ({ uid: 'facebook-uid-456', email: 'customer@example.com', auth_time: 1, firebase: { sign_in_provider: 'facebook.com' } }) }, 1000), /expired/);
 });
 const { parseFirebaseServiceAccount, initializeFirebaseAdminApp } = require('../firebase-auth');
 
