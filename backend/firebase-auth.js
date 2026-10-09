@@ -107,7 +107,8 @@ async function verifyFirebaseGoogleToken(idToken, firebaseAuth, nowSeconds = Mat
   const authTime = Number(decoded.auth_time);
   if (provider !== 'google.com' || typeof decoded.email !== 'string' || decoded.email_verified !== true) throw new Error('A verified Firebase Google sign-in is required.');
   if (!Number.isFinite(authTime) || authTime > nowSeconds || nowSeconds - authTime > 15 * 60) throw new Error('Google sign-in has expired. Please sign in again.');
-  return { email: decoded.email.trim().toLowerCase(), name: String(decoded.name || '').trim().slice(0, 160) };
+  if (typeof decoded.uid !== 'string' || !decoded.uid.trim()) throw new Error('Firebase Google sign-in did not return a valid user ID.');
+  return { uid: decoded.uid, email: decoded.email.trim().toLowerCase(), name: String(decoded.name || '').trim().slice(0, 160) };
 }
 
 module.exports = { E164_PHONE, getFirebaseClientConfig, parseFirebaseServiceAccount, initializeFirebaseAdmin, initializeFirebaseAdminApp, verifyFirebasePhoneToken, verifyFirebasePhoneIdentity, verifyFirebaseGoogleToken };

@@ -589,51 +589,76 @@ app.post('/api/auth/phone-login', async (req, res) => {
 });
 
 app.post('/api/auth/google-login', async (req, res) => {
+  let client;
   try {
     if (!firebaseAuth) return res.status(503).json({ error: 'Firebase sign-in is not configured on this server.' });
     const identity = await verifyFirebaseGoogleToken(req.body?.idToken, firebaseAuth);
-    const result = await query('SELECT * FROM users WHERE LOWER(email) = $1 LIMIT 1', [identity.email]);
-    const user = result.rows[0];
-    if (!user) return res.status(404).json({ error: 'No Home-Tech account uses this Google email yet. Create an account with phone OTP first.' });
+    client = await pool.connect();
+    await client.query('BEGIN');
+    let result = await client.query('SELECT * FROM users WHERE firebase_uid = $1 OR LOWER(email) = $2 ORDER BY firebase_uid = $1 DESC LIMIT 1', [identity.uid, identity.email]);
+    let user = result.rows[0];
+    if (!user) {
+      const fallbackName = identity.name || identity.email.split('@')[0].slice(0, 160);
+      result = await client.query(
+        `INSERT INTO users (name, email, role, firebase_uid, created_at, updated_at)
+         VALUES ($1, $2, 'customer', $3, NOW(), NOW()) RETURNING *`,
+        [fallbackName, identity.email, identity.uid]
+      );
+      user = result.rows[0];
+    } else if (user.firebase_uid && user.firebase_uid !== identity.uid) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This email is already linked to a different sign-in method. Log in with your email and password.' });
+    } else if (!user.firebase_uid) {
+      result = await client.query('UPDATE users SET firebase_uid = $1, updated_at = NOW() WHERE id = $2 RETURNING *', [identity.uid, user.id]);
+      user = result.rows[0];
+    }
     const token = makeToken();
-    await query(`INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')`, [token, user.id]);
+    await client.query(`INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')`, [token, user.id]);
+    await client.query('COMMIT');
     return res.json({ success: true, token, user: publicUser(user) });
   } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
     console.error('Firebase Google sign-in failed:', { code: err.code || 'invalid-token' });
+    if (err.code === '23505') return res.status(409).json({ error: 'An account with this email already exists. Log in with your email and password.' });
     return res.status(401).json({ error: 'Google sign-in could not be verified. Please try again.' });
+  } finally {
+    if (client) client.release();
   }
 });
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { verifyToken, identifier, name, email, password, role } = req.body || {};
-    if (!verifyToken || !identifier || !/^\+91\d{10}$/.test(String(identifier)) || !name || !email || !password || typeof password !== 'string') {
+    const hasPhoneVerification = Boolean(verifyToken);
+    if ((!hasPhoneVerification && role && role !== 'customer') || !name || !email || !password || typeof password !== 'string' || (hasPhoneVerification && (!identifier || !/^\+91\d{10}$/.test(String(identifier))))) {
       return res.status(400).json({ error: 'Missing required fields.' });
     }
-    const firebaseUid = await consumeVerifyTicket(verifyToken, identifier);
-    if (!firebaseUid) {
+    const firebaseUid = hasPhoneVerification ? await consumeVerifyTicket(verifyToken, identifier) : null;
+    if (hasPhoneVerification && !firebaseUid) {
       return res.status(401).json({ error: 'Verification expired or invalid.' });
     }
     const normalizedEmail = stripMdash(email).toLowerCase();
     if (password.length < 6 || password.length > 200 || name.trim().length > 160 || normalizedEmail.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       return res.status(400).json({ error: 'Enter a valid name and email, and a password between 6 and 200 characters.' });
     }
-    const normalizedRole = role === 'partner' ? 'partner' : 'customer';
+    const normalizedRole = hasPhoneVerification && role === 'partner' ? 'partner' : 'customer';
     const passwordHash = bcrypt.hashSync(password, 10);
-    const phoneValue = String(identifier);
+    const phoneValue = hasPhoneVerification ? String(identifier) : null;
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`firebase-phone:${phoneValue.replace(/\D/g, '')}`]);
-      const duplicatePhone = await client.query(`SELECT id FROM users WHERE REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '', 'g') = ANY($1::text[]) LIMIT 1`, [[phoneValue.replace(/\D/g, ''), phoneValue.replace(/\D/g, '').slice(-10)]]);
-      if (duplicatePhone.rows.length) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({ error: 'An account with this phone number already exists. Please use Phone OTP login.' });
+      if (phoneValue) {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`firebase-phone:${phoneValue.replace(/\D/g, '')}`]);
+        const duplicatePhone = await client.query(`SELECT id FROM users WHERE REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '', 'g') = ANY($1::text[]) LIMIT 1`, [[phoneValue.replace(/\D/g, ''), phoneValue.replace(/\D/g, '').slice(-10)]]);
+        if (duplicatePhone.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({ error: 'An account with this phone number already exists. Please log in instead.' });
+        }
       }
       const userResult = await client.query(
         `INSERT INTO users (name, email, phone, password_hash, role, firebase_uid, firebase_phone_verified_at, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), NOW())
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
          RETURNING *`,
-        [name.trim(), normalizedEmail, phoneValue, passwordHash, normalizedRole, firebaseUid]
+        [name.trim(), normalizedEmail, phoneValue, passwordHash, normalizedRole, firebaseUid, hasPhoneVerification ? new Date() : null]
       );
       const user = userResult.rows[0];
       if (normalizedRole === 'partner') {
@@ -1256,6 +1281,12 @@ app.post('/api/bookings', requireSession, async (req, res) => {
       if (Number(existingBooking.rows[0].customer_id) !== Number(req.user.id)) return res.status(409).json({ error: 'That booking ID is already in use.' });
       return res.json({ success: true, booking: await getFullBooking(bookingId) });
     }
+    const submittedPhone = typeof body.phone === 'string' ? body.phone.trim() : '';
+    const phoneDigits = submittedPhone.startsWith('+91') ? submittedPhone.slice(3) : submittedPhone;
+    if (!/^[6-9]\d{9}$/.test(phoneDigits) || (submittedPhone.startsWith('+') && !/^\+91[6-9]\d{9}$/.test(submittedPhone))) {
+      return res.status(400).json({ error: 'Enter a valid 10-digit Indian mobile number.' });
+    }
+    const customerPhone = `+91${phoneDigits}`;
     const customerAddress = body.address || {};
     const serviceEntries = Array.isArray(body.serviceItems) ? body.serviceItems : (Array.isArray(body.items) ? body.items : []);
     const paymentMethod = ['upi', 'cod'].includes(body.paymentMethod) ? body.paymentMethod : null;
@@ -1279,7 +1310,7 @@ app.post('/api/bookings', requireSession, async (req, res) => {
       coupon_discount: couponDiscount,
       visit_charge: visitCharge,
       customer_name_snapshot: body.name || req.user.name,
-      customer_phone_snapshot: body.phone || req.user.phone,
+      customer_phone_snapshot: customerPhone,
       customer_email_snapshot: body.email || req.user.email,
       house: body.house || customerAddress.house || null,
       street: body.street || customerAddress.street || null,
@@ -1297,6 +1328,14 @@ app.post('/api/bookings', requireSession, async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      // Keep the booking's contact as its own snapshot. Only fill a missing
+      // profile number; later edits to the profile cannot rewrite this booking.
+      await client.query(
+        `UPDATE users SET phone = $1, updated_at = NOW()
+         WHERE id = $2 AND NULLIF(BTRIM(COALESCE(phone, '')), '') IS NULL`,
+        [customerPhone, req.user.id]
+      );
 
       await client.query(
         `INSERT INTO bookings (

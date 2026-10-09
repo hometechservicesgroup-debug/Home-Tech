@@ -64,8 +64,8 @@ test('server accepts only fresh Firebase phone sign-in tokens with an E.164 numb
 });
 
 test('server accepts only fresh, verified Firebase Google sign-in tokens', async () => {
-  const auth = { verifyIdToken: async () => ({ email: ' CUSTOMER@EXAMPLE.COM ', name: 'Customer', email_verified: true, auth_time: 990, firebase: { sign_in_provider: 'google.com' } }) };
-  assert.deepEqual(await verifyFirebaseGoogleToken('x'.repeat(120), auth, 1000), { email: 'customer@example.com', name: 'Customer' });
+  const auth = { verifyIdToken: async () => ({ uid: 'google-uid-123', email: ' CUSTOMER@EXAMPLE.COM ', name: 'Customer', email_verified: true, auth_time: 990, firebase: { sign_in_provider: 'google.com' } }) };
+  assert.deepEqual(await verifyFirebaseGoogleToken('x'.repeat(120), auth, 1000), { uid: 'google-uid-123', email: 'customer@example.com', name: 'Customer' });
   await assert.rejects(verifyFirebaseGoogleToken('x'.repeat(120), { verifyIdToken: async () => ({ email: 'customer@example.com', email_verified: false, auth_time: 990, firebase: { sign_in_provider: 'google.com' } }) }, 1000), /verified Firebase Google/);
   await assert.rejects(verifyFirebaseGoogleToken('x'.repeat(120), { verifyIdToken: async () => ({ email: 'customer@example.com', email_verified: true, auth_time: 990, firebase: { sign_in_provider: 'password' } }) }, 1000), /verified Firebase Google/);
   await assert.rejects(verifyFirebaseGoogleToken('x'.repeat(120), { verifyIdToken: async () => ({ email: 'customer@example.com', email_verified: true, auth_time: 1, firebase: { sign_in_provider: 'google.com' } }) }, 1000), /expired/);

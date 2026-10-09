@@ -772,7 +772,6 @@ let customerBookingsError = '';
 function logout(){
   const session = getSession();
   if(session) fetch(`${OTP_API_BASE}/api/auth/logout`, { method:'POST', headers:authHeaders() }).catch(()=>{});
-  signOutFirebasePhoneAuth();
   sessionStorage.removeItem(LS.session);
   customerBookings = []; customerBookingsToken = null; customerBookingsError = '';
   refreshAuthNav(); go('home');
@@ -856,7 +855,6 @@ function refreshAuthNav(){
 
 function clearAllLocalData(){
   if(!confirm('This clears your cart, saved bookings and login from this device. Continue?')) return;
-  signOutFirebasePhoneAuth();
   [LS.cart, LS.bookings, LS.wishlist, LS.coupon].forEach(k=>localStorage.removeItem(k));
   sessionStorage.removeItem(LS.session);
   customerBookings = []; customerBookingsToken = null; customerBookingsError = '';
@@ -1312,7 +1310,14 @@ function renderBookingView(){
       <h3 class="text-white text-[15px] font-medium mb-3">Personal Details</h3>
       <div class="grid sm:grid-cols-2 gap-3.5 mb-6">
         <input id="bName" value="${escapeHtml(u?u.name:'')}" placeholder="Full Name" class="rounded-xl px-4 py-3 text-[14px] sm:col-span-2">
-        <input id="bPhone" value="${escapeHtml(u?u.phone||'':'')}" type="tel" placeholder="Mobile Number" class="rounded-xl px-4 py-3 text-[14px]">
+        <div class="sm:col-span-2">
+          <label for="bPhone" class="block text-[13px] text-white mb-2">Mobile Number <span class="text-red-400">*</span></label>
+          <div class="flex rounded-xl overflow-hidden border border-[var(--line)] bg-[var(--surface-1)]">
+            <span class="px-4 py-3 text-[14px] text-[var(--ink-1)] border-r border-[var(--line)]">+91</span>
+            <input id="bPhone" value="${escapeHtml(bookingPhoneDigits(u?.phone||''))}" type="tel" inputmode="numeric" autocomplete="tel-national" maxlength="10" pattern="[6-9][0-9]{9}" placeholder="Enter 10-digit mobile number" oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,10)" aria-describedby="bPhoneError" class="min-w-0 flex-1 px-4 py-3 text-[14px]">
+          </div>
+          <p id="bPhoneError" class="hidden mt-1.5 text-[12.5px] text-red-400" role="alert">Enter a valid 10-digit Indian mobile number.</p>
+        </div>
         <input id="bEmail" value="${escapeHtml(u?u.email:'')}" type="email" placeholder="Email Address (optional)" class="rounded-xl px-4 py-3 text-[14px]">
       </div>
 
@@ -1363,6 +1368,12 @@ function renderBookingView(){
   </section>`;
 }
 function initBookingHandlers(){ bookingCtx = { locationStatus:'none', lat:null, lng:null }; selectedPaymentMethod='cod'; }
+function bookingPhoneDigits(value){
+  let digits=String(value||'').replace(/\D/g,'');
+  if(digits.length===12&&digits.startsWith('91')) digits=digits.slice(2);
+  else if(digits.length===11&&digits.startsWith('0')) digits=digits.slice(1);
+  return digits.slice(0,10);
+}
 function requestBookingLocation(){
   const btn = document.getElementById('shareLocBtn');
   const statusEl = document.getElementById('bookingLocStatus');
@@ -1382,7 +1393,7 @@ function requestBookingLocation(){
 function confirmBooking(){
   const session = getSession();
   const name = document.getElementById('bName').value.trim();
-  const phone = document.getElementById('bPhone').value.trim();
+  const phone = String(document.getElementById('bPhone').value||'').trim();
   const email = document.getElementById('bEmail').value.trim();
   const house = document.getElementById('bHouse').value.trim();
   const street = document.getElementById('bStreet').value.trim();
@@ -1391,19 +1402,22 @@ function confirmBooking(){
   const date = document.getElementById('bDate').value;
   const time = document.getElementById('bTime').value;
   const err = document.getElementById('bookingError');
+  const phoneError=document.getElementById('bPhoneError');
   if(!session || session.role!=='customer'){
     err.textContent = 'Please log in with a customer account to book a service.';
     err.classList.remove('hidden');
     return;
   }
-  if(!name || !phone || phone.replace(/\D/g,'').length<10 || !house || !city || !date || !time){
-    err.textContent = 'Please fill your name, a valid mobile number, address, city, date and time.';
+  const phoneIsValid=/^[6-9]\d{9}$/.test(phone);
+  if(phoneError) phoneError.classList.toggle('hidden',phoneIsValid);
+  if(!name || !phoneIsValid || !house || !city || !date || !time){
+    err.textContent = !phoneIsValid ? 'Enter a valid 10-digit Indian mobile number to confirm your booking.' : 'Please fill your name, address, city, date and time.';
     err.classList.remove('hidden');
     return;
   }
   err.classList.add('hidden');
   const bookingId = 'HT' + Date.now().toString().slice(-8);
-  const details = { bookingId, name, phone, email, house, street, city, pin, date, time };
+  const details = { bookingId, name, phone:'+91'+phone, email, house, street, city, pin, date, time };
   if(selectedPaymentMethod==='online'){
     payOnlineThenBook(details);
   } else {
@@ -1509,8 +1523,6 @@ function resetAuthState(){ authState = { role:'customer', step:'choose', identif
 /* ---- LOGIN (email + password) ---- */
 function renderLoginView(){
   if(currentUser()) return renderAccountView();
-  if(authState.step==='phone') return phoneLoginStep();
-  if(authState.step==='otp' && authState.purpose==='login') return phoneOtpStep('login');
   return `
   <section class="px-5 sm:px-8 py-16 sm:py-24">
     <div class="max-w-sm mx-auto glass rounded-3xl p-8">
@@ -1524,9 +1536,7 @@ function renderLoginView(){
       <input id="liEmail" type="email" placeholder="Email" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-3">
       <input id="liPass" onkeydown="if(event.key==='Enter')doLogin()" type="password" placeholder="Password" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
-      <button onclick="go('forgot')" class="text-[12.5px] text-[var(--indigo-0)] hover:underline mb-5 block">Forgot Password?</button>
       <button onclick="doLogin()" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4">Sign In</button>
-      <button onclick="authState.step='phone'; authState.purpose='login'; go('login')" class="w-full py-3 rounded-full btn-ghost text-white text-[14px] font-medium mb-4">Login with Phone OTP</button>
       <button onclick="loginWithGoogle()" class="w-full py-3 rounded-full btn-ghost text-white text-[14px] font-medium mb-4">Continue with Google</button>
       <p class="text-[13px] text-[var(--ink-2)] text-center">New here? <button onclick="resetAuthState(); go('signup')" class="text-[var(--indigo-0)] hover:underline">Create an account</button></p>
     </div>
@@ -1557,11 +1567,9 @@ async function doLogin(){
   } catch(e){ authErr('Could not reach the server. Make sure your backend is deployed and OTP_API_BASE is set correctly.'); }
 }
 
-/* ---- SIGN UP (OTP verify, then set name + email + password) ---- */
+/* ---- SIGN UP (email + password; mobile is collected only at booking) ---- */
 function renderSignupView(){
   if(currentUser()) return renderAccountView();
-  if(authState.step==='otp') return signupOtpStep();
-  if(authState.step==='setup') return signupSetupStep();
   return signupChooseStep();
 }
 function signupChooseStep(){
@@ -1574,12 +1582,14 @@ function signupChooseStep(){
       </div>
       <div class="lc-wrap" id="lcWrap"><svg viewBox="0 0 240 130" aria-hidden="true"><g class="lc-body"><rect x="20" y="20" width="60" height="110" rx="10" fill="#6d5df6"/><g class="lc-eye"><circle cx="40" cy="50" r="6.5" fill="#fff"/><circle class="lc-pupil" cx="40" cy="50" r="3.2" fill="#111"/></g><g class="lc-eye"><circle cx="62" cy="50" r="6.5" fill="#fff"/><circle class="lc-pupil" cx="62" cy="50" r="3.2" fill="#111"/></g><path d="M42 72q9 6 18 0" stroke="#111" stroke-width="2.5" fill="none" stroke-linecap="round"/></g><g class="lc-body lc-b2"><rect x="82" y="50" width="42" height="80" rx="8" fill="#1c1f2b"/><g class="lc-eye"><circle cx="96" cy="72" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="96" cy="72" r="2.8" fill="#111"/></g><g class="lc-eye"><circle cx="112" cy="72" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="112" cy="72" r="2.8" fill="#111"/></g></g><g class="lc-body lc-b3"><path d="M120 130a55 55 0 0 1 110 0z" fill="#ff8a3d"/><g class="lc-eye"><circle cx="160" cy="104" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="160" cy="104" r="2.8" fill="#111"/></g><g class="lc-eye"><circle cx="184" cy="104" r="5.5" fill="#fff"/><circle class="lc-pupil" cx="184" cy="104" r="2.8" fill="#111"/></g><path d="M166 116q6 5 12 0" stroke="#111" stroke-width="2.5" fill="none" stroke-linecap="round"/></g><g class="lc-body lc-b4"><rect x="128" y="62" width="44" height="68" rx="20" fill="#f2c94c"/><g class="lc-eye"><circle cx="142" cy="84" r="5" fill="#fff"/><circle class="lc-pupil" cx="142" cy="84" r="2.5" fill="#111"/></g><g class="lc-eye"><circle cx="158" cy="84" r="5" fill="#fff"/><circle class="lc-pupil" cx="158" cy="84" r="2.5" fill="#111"/></g></g></svg></div>
       <h2 class="font-display text-[26px] text-white mb-1">Create Account</h2>
-      <p class="text-[13px] text-[var(--ink-2)] mb-6">Verify with OTP first, then set your password.</p>
-      <input id="authIdentifier" type="tel" placeholder="10-digit mobile number" autocomplete="tel" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">
+      <p class="text-[13px] text-[var(--ink-2)] mb-6">Create your account. We will ask for your mobile number only when you confirm a booking.</p>
+      <input id="suName" placeholder="Full Name" autocomplete="name" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-3">
+      <input id="suEmail" type="email" placeholder="Email" autocomplete="email" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-3">
+      <input id="suPass" type="password" placeholder="Create Password (min 6 characters)" autocomplete="new-password" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-3">
+      <input id="suPass2" type="password" placeholder="Confirm Password" autocomplete="new-password" class="lc-input w-full rounded-xl px-4 py-3 text-[14px] mb-2">
+      <label class="flex items-start gap-2.5 text-[12px] leading-relaxed text-[var(--ink-2)] mt-2"><input id="signupTermsAccepted" type="checkbox" class="mt-1 accent-indigo-500"><span>I agree to the <a href="/terms-and-conditions.html" target="_blank" rel="noopener" class="text-[var(--indigo-0)] underline">Terms &amp; Conditions</a> and acknowledge the <a href="/privacy-policy.html" target="_blank" rel="noopener" class="text-[var(--indigo-0)] underline">Privacy Policy</a>.</span></label>
       <p id="authError" class="text-[12.5px] text-red-400 mb-2 hidden"></p>
-      <p class="text-[11.5px] text-[var(--ink-2)] mb-3">Firebase will send a one-time SMS code. Limited to 3 requests per day per number; carrier rates may apply.</p>
-      <div id="firebase-recaptcha-signup"></div>
-      <button onclick="sendOtp('signup')" id="sendOtpBtn" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4">Send OTP</button>
+      <button onclick="finishSignup()" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-4 mt-3">Create Account</button>
       <p class="text-[13px] text-[var(--ink-2)] text-center">Already have an account? <button onclick="resetAuthState(); go('login')" class="text-[var(--indigo-0)] hover:underline">Log In</button></p>
     </div>
   </section>`;
@@ -1781,7 +1791,7 @@ async function finishSignup(){
   try{
     const res = await fetch(`${OTP_API_BASE}/api/auth/register`, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ verifyToken: authState.verifyToken, identifier: authState.identifier, name, email, password: pass, role: authState.role })
+      body: JSON.stringify({ name, email, password: pass, role: 'customer' })
     });
     const data = await res.json();
     if(!res.ok){ authErr(data.error || 'Could not create account.'); return; }
@@ -1792,11 +1802,10 @@ async function finishSignup(){
   } catch(e){ authErr('Could not reach the server.'); }
 }
 
-/* ---- FORGOT PASSWORD (OTP verify again, then set a new password) ---- */
+/* Password recovery is handled by support until an email reset flow is added. */
 function renderForgotView(){
-  if(authState.step==='otp') return forgotOtpStep();
-  if(authState.step==='newpass') return forgotNewPassStep();
-  return forgotChooseStep();
+  resetAuthState();
+  return renderLoginView();
 }
 function forgotChooseStep(){
   return `
@@ -2328,7 +2337,6 @@ updateCartBadge();
 refreshAuthNav();
 go('home');
 restoreSession();
-if(localStorage.getItem(LS.firebasePhoneAuth)==='1') getFirebasePhoneAuth().catch(()=>{});
 applyPriceOverrides();
 applyBrandingSettings();
 window.addEventListener('resize', ()=> updateDesktopNavPill(currentView));
