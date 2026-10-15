@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const { sanitizeHeroConfig, parseStored: parseHeroConfig } = require('./hero-config');
 const { Pool } = require('pg');
 const SERVICE_OPTIONS = require('./data/service-options');
 const { getFirebaseClientConfig, initializeFirebaseAdmin, verifyFirebasePhoneIdentity, verifyFirebaseSocialToken } = require('./firebase-auth');
@@ -453,6 +454,9 @@ app.get(['/', '/hometech-services.html'], (_req, res) => {
 });
 app.get('/admin.html', (_req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
 app.get('/partner.html', (_req, res) => res.sendFile(path.join(__dirname, 'partner.html')));
+for (const page of ['privacy-policy.html', 'terms-and-conditions.html', 'partner-terms.html']) {
+  app.get('/' + page, (_req, res) => res.sendFile(path.join(__dirname, '..', page)));
+}
 
 app.get('/health', async (_req, res) => {
   try {
@@ -1145,6 +1149,37 @@ app.post('/api/admin/settings', requireAdmin, upload.single('logo'), async (req,
   } catch (err) {
     console.error('settings save error:', err.message);
     const failure = mediaUploadFailure(err, 'Could not save settings.');
+    return res.status(failure.status).json({ error: failure.error });
+  }
+});
+
+/* ---- Home-page hero picture (admin-managed). Public read happens through GET /api/settings -> heroConfig ---- */
+app.post('/api/admin/hero', requireAdmin, upload.single('image'), async (req, res) => {
+  try {
+    const stored = await query("SELECT value FROM site_settings WHERE key = 'heroConfig'");
+    const current = parseHeroConfig(stored.rows[0] && stored.rows[0].value);
+    const body = { ...(req.body || {}) };
+    delete body.imageUrl;
+    if (req.file) {
+      const storedImage = await storeUploadedFile(req.file, 'site');
+      body.imageUrl = storedImage.url;
+    } else if (String(body.removeImage) === 'true') {
+      body.imageUrl = '';
+    }
+    const next = sanitizeHeroConfig(body, current);
+    if (next.enabled && !next.imageUrl) {
+      return res.status(400).json({ error: 'Upload a picture before turning the hero picture on.' });
+    }
+    await query(
+      `INSERT INTO site_settings (key, value, created_at, updated_at)
+       VALUES ('heroConfig', $1, NOW(), NOW())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [JSON.stringify(next)]
+    );
+    return res.json({ success: true, hero: next });
+  } catch (err) {
+    console.error('hero save error:', err.message);
+    const failure = mediaUploadFailure(err, 'Could not save the hero picture.');
     return res.status(failure.status).json({ error: failure.error });
   }
 });

@@ -49,6 +49,13 @@
   .gallery-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:14px; }
   .gallery-item{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:10px; }
   .settings-card{ max-width:420px; }
+  .settings-card.wide{ max-width:560px; }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:0 12px; }
+  @media (max-width:520px){ .grid2{ grid-template-columns:1fr; } }
+  .chk{ display:flex; align-items:center; gap:10px; margin:0 0 14px; font-size:13px; color:var(--ink); cursor:pointer; }
+  .chk input{ width:auto; margin:0; accent-color:var(--indigo); }
+  .hero-preview{ width:100%; aspect-ratio:4/3; object-fit:contain; border-radius:12px; background:rgba(255,255,255,0.04); border:1px dashed var(--line); margin-bottom:12px; display:none; }
+  .hint{ font-size:11.5px; color:var(--ink2); margin:-8px 0 14px; }
   .location-card{ padding:10px 12px; border:1px solid var(--line); border-radius:10px; margin:8px 0; font-size:12px; color:var(--ink2); }
   .location-card strong{ color:var(--ink); }
 
@@ -182,6 +189,69 @@
       <p id="brandErr" class="err"></p>
       <p id="brandOk" class="ok"></p>
       <button class="btn-primary" onclick="saveBranding()">Save Branding</button>
+    </div>
+    <div class="row-item settings-card wide" style="margin-top:14px;">
+      <h3 style="margin-bottom:12px;">Home Hero Picture</h3>
+      <p class="sub" style="margin-bottom:16px;">Shows one big picture on the home page in place of the floating appliance icons. Switch it off any time to bring the icons back.</p>
+      <label class="chk"><input id="heroEnabled" type="checkbox"> Show the big picture on the home page</label>
+      <label>Picture (JPG, PNG or WebP - portrait or square works best)</label>
+      <img id="heroPreview" class="hero-preview" alt="Current hero picture">
+      <input id="heroImage" type="file" accept="image/png,image/jpeg,image/webp" onchange="previewHeroFile(this)">
+      <label class="chk" id="heroRemoveRow" style="display:none;"><input id="heroRemove" type="checkbox"> Remove the current picture</label>
+      <div class="grid2">
+        <div><label>Frame style</label>
+          <select id="heroFrame">
+            <option value="spatial">Spatial - floating 3D</option>
+            <option value="liquid">Liquid Glass</option>
+            <option value="glass">Glass</option>
+            <option value="clay">Clay - soft and puffy</option>
+            <option value="neumorphic">Neumorphic - soft relief</option>
+            <option value="skeuomorphic">Skeuomorphic - metal bezel</option>
+            <option value="brutalist">Brutalist - bold border</option>
+            <option value="maximal">Maximal - colourful layers</option>
+            <option value="minimal">Minimal - clean, no frame</option>
+          </select></div>
+        <div><label>Shape</label>
+          <select id="heroShape">
+            <option value="tall">Tall (4:5)</option>
+            <option value="square">Square</option>
+            <option value="wide">Wide (16:10)</option>
+          </select></div>
+        <div><label>Picture fit</label>
+          <select id="heroFit">
+            <option value="cover">Fill the frame (crop edges)</option>
+            <option value="contain">Show whole picture</option>
+          </select></div>
+        <div><label>Focus point</label>
+          <select id="heroPosition">
+            <option value="center">Center</option><option value="top">Top</option><option value="bottom">Bottom</option>
+            <option value="left">Left</option><option value="right">Right</option>
+          </select></div>
+        <div><label>Text shade on picture</label>
+          <select id="heroOverlay">
+            <option value="soft">Soft</option><option value="strong">Strong</option><option value="none">None</option>
+          </select></div>
+        <div><label>When tapped, open</label>
+          <select id="heroLink">
+            <option value="none">Nothing</option>
+            <option value="services">All Services</option>
+            <option value="partner">Join as Partner</option>
+            <option value="contact">Contact section</option>
+          </select></div>
+      </div>
+      <label>Headline on picture (optional)</label>
+      <input id="heroTitle" maxlength="60" placeholder="e.g. Summer AC service offer">
+      <label>Small text under headline (optional)</label>
+      <input id="heroSubtitle" maxlength="120" placeholder="e.g. Gas refill + deep clean from Rs 499">
+      <div class="grid2">
+        <div><label>Sticker label (optional)</label><input id="heroBadge" maxlength="24" placeholder="e.g. New"></div>
+        <div><label>Button text (optional)</label><input id="heroButton" maxlength="24" placeholder="e.g. Book now"></div>
+      </div>
+      <label class="chk"><input id="heroChips" type="checkbox"> Show the floating "27+ services" and "4.9 rating" chips</label>
+      <label class="chk"><input id="heroTilt" type="checkbox"> Gentle 3D tilt when the mouse moves (desktop)</label>
+      <p id="heroErr" class="err"></p>
+      <p id="heroOk" class="ok"></p>
+      <button class="btn-primary" onclick="saveHero()">Save Hero Picture</button>
     </div>
     <div class="row-item settings-card" style="margin-top:14px;">
       <h3 style="margin-bottom:12px;">Customer UPI QR payment</h3>
@@ -675,6 +745,7 @@ async function loadBranding(){
     const settings = await res.json();
     if(!res.ok) throw new Error(settings.error || 'Could not load settings.');
     document.getElementById('brandName').value = settings.siteName || '';
+    fillHero(settings.heroConfig);
     const paymentRes = await fetch(`${session.apiBase}/api/payment-settings`);
     const paymentSettings = await paymentRes.json();
     if(paymentRes.ok) document.getElementById('paymentUpiId').value = paymentSettings.upiId || '';
@@ -705,6 +776,62 @@ async function saveBranding(){
     if(!res.ok) throw new Error(data.error || 'Could not save branding.');
     okEl.textContent = 'Saved! Changes will appear on the website within moments.'; okEl.style.display='block';
     logoInput.value = '';
+  } catch(e){ errEl.textContent = e.message; errEl.style.display='block'; }
+}
+
+/* ---- Home hero picture ---- */
+function resolveAdminMedia(value){
+  const src = String(value||'');
+  if(/^https:\/\/(?:res\.cloudinary\.com|firebasestorage\.googleapis\.com)\//i.test(src)) return src;
+  if(/^\/uploads\/[A-Za-z0-9._/-]+$/.test(src)) return session.apiBase + src;
+  return '';
+}
+function fillHero(raw){
+  let cfg = {};
+  try{ cfg = typeof raw==='string' ? JSON.parse(raw||'{}') : (raw||{}); }catch(e){ cfg = {}; }
+  const set = (id, v, d)=>{ const el=document.getElementById(id); if(el) el.value = (v===undefined||v===null||v==='') ? d : v; };
+  document.getElementById('heroEnabled').checked = !!cfg.enabled;
+  set('heroFrame', cfg.frame, 'spatial'); set('heroShape', cfg.shape, 'tall'); set('heroFit', cfg.fit, 'cover');
+  set('heroPosition', cfg.position, 'center'); set('heroOverlay', cfg.overlay, 'soft'); set('heroLink', cfg.link, 'none');
+  set('heroTitle', cfg.title, ''); set('heroSubtitle', cfg.subtitle, ''); set('heroBadge', cfg.badge, ''); set('heroButton', cfg.buttonText, '');
+  document.getElementById('heroChips').checked = cfg.showChips !== false;
+  document.getElementById('heroTilt').checked = cfg.tilt !== false;
+  document.getElementById('heroRemove').checked = false;
+  document.getElementById('heroImage').value = '';
+  const url = resolveAdminMedia(cfg.imageUrl);
+  const prev = document.getElementById('heroPreview');
+  if(url){ prev.src = url; prev.style.display = 'block'; } else { prev.removeAttribute('src'); prev.style.display = 'none'; }
+  document.getElementById('heroRemoveRow').style.display = url ? 'flex' : 'none';
+}
+function previewHeroFile(input){
+  const file = input.files && input.files[0];
+  const prev = document.getElementById('heroPreview');
+  if(!file){ return; }
+  prev.src = URL.createObjectURL(file); prev.style.display = 'block';
+  document.getElementById('heroRemove').checked = false;
+}
+async function saveHero(){
+  const errEl = document.getElementById('heroErr'), okEl = document.getElementById('heroOk');
+  errEl.style.display='none'; okEl.style.display='none';
+  const file = document.getElementById('heroImage').files[0];
+  if(file && file.size > 8*1024*1024){ errEl.textContent='Please choose a picture under 8 MB so the home page stays fast.'; errEl.style.display='block'; return; }
+  const form = new FormData();
+  const val = id => document.getElementById(id).value;
+  form.append('enabled', document.getElementById('heroEnabled').checked ? 'true' : 'false');
+  form.append('frame', val('heroFrame')); form.append('shape', val('heroShape')); form.append('fit', val('heroFit'));
+  form.append('position', val('heroPosition')); form.append('overlay', val('heroOverlay')); form.append('link', val('heroLink'));
+  form.append('title', val('heroTitle').trim()); form.append('subtitle', val('heroSubtitle').trim());
+  form.append('badge', val('heroBadge').trim()); form.append('buttonText', val('heroButton').trim());
+  form.append('showChips', document.getElementById('heroChips').checked ? 'true' : 'false');
+  form.append('tilt', document.getElementById('heroTilt').checked ? 'true' : 'false');
+  if(file) form.append('image', file);
+  else if(document.getElementById('heroRemove').checked) form.append('removeImage', 'true');
+  try{
+    const res = await fetch(`${session.apiBase}/api/admin/hero`, { method:'POST', headers:{'x-admin-token':session.token}, body: form });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Could not save the hero picture.');
+    fillHero(data.hero);
+    okEl.textContent = 'Saved! The home page will show it on the next refresh.'; okEl.style.display='block';
   } catch(e){ errEl.textContent = e.message; errEl.style.display='block'; }
 }
 
