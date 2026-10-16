@@ -37,4 +37,9 @@ copyHtml('backend/partner.html', 'partner.html');
 for (const page of ['privacy-policy.html', 'terms-and-conditions.html', 'partner-terms.html']) {
   fs.copyFileSync(path.join(root, page), path.join(out, page));
 }
+// Google Search Console needs this file at the public site root on every host.
+fs.copyFileSync(
+  path.join(root, 'google422ff58121bc039d.html'),
+  path.join(out, 'google422ff58121bc039d.html')
+);
 console.log(`Netlify site built in dist for backend ${parsed.origin}`);
