@@ -475,6 +475,10 @@ function renderPartners(partners){
         <button class="action btn-approve" onclick="setPartnerStatus('${escapeHtml(p.email)}','approved')">Approve</button>
         <button class="action btn-reject" onclick="setPartnerStatus('${escapeHtml(p.email)}','rejected')">Reject</button>
       </div>
+      <div class="row" style="margin-top:10px;">
+        <input id="wallet-credit-${escapeHtml(p.email)}" type="number" min="1" max="1000000" step="1" placeholder="Amount received (₹)" style="width:190px; margin:0; padding:8px 10px;">
+        <button class="action btn-approve" onclick="creditPartnerWallet('${escapeHtml(p.email)}')">Add Wallet Balance</button>
+      </div>
     </div>
   `).join('');
 }
@@ -528,6 +532,19 @@ async function setPartnerStatus(email, status){
     if(!res.ok) throw new Error(data.error);
     loadAll();
   } catch(e){ alert('Error: ' + e.message); }
+}
+async function creditPartnerWallet(email){
+  const input=document.getElementById(`wallet-credit-${email}`);
+  const amount=Number(input?.value);
+  if(!Number.isFinite(amount)||amount<=0){ alert('Enter the amount received from this partner.'); return; }
+  if(!confirm(`Confirm that ₹${amount} was received and add it to this partner's wallet?`)) return;
+  try{
+    const res=await fetch(`${session.apiBase}/api/admin/partners/${encodeURIComponent(email)}/wallet-credit`,{method:'POST',headers:authHeaders(true),body:JSON.stringify({amount})});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Could not add wallet balance.');
+    alert(`Wallet credited. New balance: ₹${data.balance}`);
+    loadAll();
+  }catch(error){ alert('Error: '+error.message); }
 }
 
 /* ---- Prices & Photos ---- */

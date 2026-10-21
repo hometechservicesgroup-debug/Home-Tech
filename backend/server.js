@@ -1315,6 +1315,56 @@ app.patch('/api/partners/:email/status', requireAdmin, async (req, res) => {
   }
 });
 
+app.post('/api/admin/partners/:email/wallet-credit', requireAdmin, async (req, res) => {
+  const amount = Number(req.body?.amount);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1000000) {
+    return res.status(400).json({ error: 'Enter a wallet credit amount between ₹1 and ₹10,00,000.' });
+  }
+
+  const email = String(req.params.email || '').trim().toLowerCase();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const partnerResult = await client.query(
+      `SELECT p.*
+       FROM partners p
+       JOIN users u ON u.id = p.user_id
+       WHERE LOWER(u.email) = $1
+       FOR UPDATE`,
+      [email]
+    );
+    const partner = partnerResult.rows[0];
+    if (!partner) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Partner not found.' });
+    }
+    if (partner.status !== 'approved') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Approve this partner before adding wallet balance.' });
+    }
+    const updated = await client.query(
+      `UPDATE partners
+       SET wallet_balance = wallet_balance + $1, updated_at = NOW()
+       WHERE id = $2
+       RETURNING wallet_balance`,
+      [amount, partner.id]
+    );
+    await client.query(
+      `INSERT INTO partner_wallet_transactions (partner_id, type, amount, reason, created_at)
+       VALUES ($1, 'credit', $2, 'Admin-verified wallet top-up', NOW())`,
+      [partner.id, amount]
+    );
+    await client.query('COMMIT');
+    return res.json({ success: true, balance: Number(updated.rows[0].wallet_balance) });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('partner wallet credit error:', err.message);
+    return res.status(500).json({ error: 'Could not add wallet balance.' });
+  } finally {
+    client.release();
+  }
+});
+
 app.post('/api/bookings', requireSession, async (req, res) => {
   try {
     if (req.user.role !== 'customer') {
