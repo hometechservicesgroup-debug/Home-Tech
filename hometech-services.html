@@ -2275,7 +2275,8 @@ async function loginWithProvider(providerName){
     if(isFacebook) provider.addScope('email');
     const result=await authMod.signInWithPopup(auth,provider);
     const idToken=await result.user.getIdToken(true);
-    const res=await fetch(`${OTP_API_BASE}/api/auth/${isFacebook?'facebook':'google'}-login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken})});
+    const role=authState.role==='partner'?'partner':'customer';
+    const res=await fetch(`${OTP_API_BASE}/api/auth/${isFacebook?'facebook':'google'}-login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken,role})});
     const data=await res.json();
     try{await authMod.signOut(auth);}catch{}
     if(!res.ok) throw new Error(data.error||`${isFacebook?'Facebook':'Google'} sign-in failed.`);
@@ -2388,7 +2389,7 @@ async function finishSignup(){
   try{
     const res = await fetch(`${OTP_API_BASE}/api/auth/register`, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ name, email, password: pass, role: 'customer' })
+      body: JSON.stringify({ name, email, password: pass, role: authState.role==='partner'?'partner':'customer' })
     });
     const data = await res.json();
     if(!res.ok){ authErr(data.error || 'Could not create account.'); return; }
@@ -2550,7 +2551,7 @@ function renderPartnerView(){
     <section class="px-5 sm:px-8 py-16 sm:py-24 text-center max-w-sm mx-auto">
       <p class="text-[13px] text-[var(--indigo-0)] mb-3">Partner with us</p>
       <h2 class="font-display text-[26px] text-white mb-3">Join Our Service Network</h2>
-      <p class="text-[14px] text-[var(--ink-1)] mb-8">Create a partner account first — you'll verify with OTP, then set a password.</p>
+      <p class="text-[14px] text-[var(--ink-1)] mb-8">Create a partner account, then complete your profile for approval.</p>
       <button onclick="resetAuthState(); authState.role='partner'; go('signup');" class="w-full py-3.5 rounded-full btn-primary text-white text-[14.5px] font-medium mb-3">Create Partner Account</button>
       <p class="text-[13px] text-[var(--ink-2)]">Already applied? <button onclick="go('login')" class="text-[var(--indigo-0)] hover:underline">Log In</button></p>
     </section>`;

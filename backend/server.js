@@ -597,6 +597,7 @@ async function socialLogin(req, res, expectedProvider, providerLabel) {
   try {
     if (!firebaseAuth) return res.status(503).json({ error: `Firebase ${providerLabel} sign-in is not configured on this server.` });
     const identity = await verifyFirebaseSocialToken(req.body?.idToken, firebaseAuth, expectedProvider);
+    const requestedRole = req.body?.role === 'partner' ? 'partner' : 'customer';
     client = await pool.connect();
     await client.query('BEGIN');
     let result = await client.query('SELECT * FROM users WHERE firebase_uid = $1 OR LOWER(email) = $2 ORDER BY firebase_uid = $1 DESC LIMIT 1', [identity.uid, identity.email]);
@@ -605,16 +606,27 @@ async function socialLogin(req, res, expectedProvider, providerLabel) {
       const fallbackName = identity.name || identity.email.split('@')[0].slice(0, 160);
       result = await client.query(
         `INSERT INTO users (name, email, role, firebase_uid, created_at, updated_at)
-         VALUES ($1, $2, 'customer', $3, NOW(), NOW()) RETURNING *`,
-        [fallbackName, identity.email, identity.uid]
+         VALUES ($1, $2, $3, $4, NOW(), NOW()) RETURNING *`,
+        [fallbackName, identity.email, requestedRole, identity.uid]
       );
       user = result.rows[0];
+      if (requestedRole === 'partner') {
+        await client.query(
+          `INSERT INTO partners (user_id, status, wallet_balance, created_at, updated_at)
+           VALUES ($1, 'pending', 0, NOW(), NOW())`,
+          [user.id]
+        );
+      }
     } else if (user.firebase_uid && user.firebase_uid !== identity.uid) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'This email is already linked to a different sign-in method. Log in with your email and password.' });
     } else if (!user.firebase_uid) {
       result = await client.query('UPDATE users SET firebase_uid = $1, updated_at = NOW() WHERE id = $2 RETURNING *', [identity.uid, user.id]);
       user = result.rows[0];
+    }
+    if (requestedRole === 'partner' && user.role !== 'partner') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This email already belongs to a customer account. Use a different email address for your partner account.' });
     }
     const token = makeToken();
     await client.query(`INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL '30 days')`, [token, user.id]);
@@ -636,7 +648,7 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const { verifyToken, identifier, name, email, password, role } = req.body || {};
     const hasPhoneVerification = Boolean(verifyToken);
-    if ((!hasPhoneVerification && role && role !== 'customer') || !name || !email || !password || typeof password !== 'string' || (hasPhoneVerification && (!identifier || !/^\+91\d{10}$/.test(String(identifier))))) {
+    if (!['customer', 'partner', undefined].includes(role) || !name || !email || !password || typeof password !== 'string' || (hasPhoneVerification && (!identifier || !/^\+91\d{10}$/.test(String(identifier))))) {
       return res.status(400).json({ error: 'Missing required fields.' });
     }
     const firebaseUid = hasPhoneVerification ? await consumeVerifyTicket(verifyToken, identifier) : null;
@@ -647,7 +659,7 @@ app.post('/api/auth/register', async (req, res) => {
     if (password.length < 6 || password.length > 200 || name.trim().length > 160 || normalizedEmail.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       return res.status(400).json({ error: 'Enter a valid name and email, and a password between 6 and 200 characters.' });
     }
-    const normalizedRole = hasPhoneVerification && role === 'partner' ? 'partner' : 'customer';
+    const normalizedRole = role === 'partner' ? 'partner' : 'customer';
     const passwordHash = bcrypt.hashSync(password, 10);
     const phoneValue = hasPhoneVerification ? String(identifier) : null;
     const client = await pool.connect();
