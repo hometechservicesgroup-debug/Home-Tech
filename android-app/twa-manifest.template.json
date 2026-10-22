@@ -1,0 +1,12 @@
+{
+  "packageId": "__ANDROID_APPLICATION_ID__",
+  "host": "home-tech.pages.dev",
+  "name": "Home-Tech Services",
+  "launcherName": "Home-Tech",
+  "display": "standalone",
+  "themeColor": "#090b12",
+  "navigationColor": "#090b12",
+  "startUrl": "https://home-tech.pages.dev/",
+  "iconUrl": "https://home-tech.pages.dev/assets/pwa/icon-512.png",
+  "splashScreenFadeOutDuration": 300
+}

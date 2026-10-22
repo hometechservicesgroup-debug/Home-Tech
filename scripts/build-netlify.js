@@ -34,9 +34,12 @@ function copyHtml(source, target) {
 copyHtml('hometech-services.html', 'index.html');
 copyHtml('backend/admin.html', 'admin.html');
 copyHtml('backend/partner.html', 'partner.html');
-for (const page of ['privacy-policy.html', 'terms-and-conditions.html', 'partner-terms.html']) {
+for (const page of ['privacy-policy.html', 'terms-and-conditions.html', 'partner-terms.html', 'account-deletion.html', 'offline.html']) {
   fs.copyFileSync(path.join(root, page), path.join(out, page));
 }
+fs.cpSync(path.join(root, 'assets'), path.join(out, 'assets'), { recursive: true });
+fs.copyFileSync(path.join(root, 'manifest.webmanifest'), path.join(out, 'manifest.webmanifest'));
+fs.copyFileSync(path.join(root, 'service-worker.js'), path.join(out, 'service-worker.js'));
 // Google Search Console needs this file at the public site root on every host.
 fs.copyFileSync(
   path.join(root, 'google422ff58121bc039d.html'),

@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="api-base" content="">
+<meta name="theme-color" content="#090b12">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/assets/pwa/icon-192.png">
+<link rel="apple-touch-icon" href="/assets/pwa/icon-192.png">
 <title>Home-Tech Services — Professional Home Services at Your Doorstep</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2539,6 +2546,7 @@ function renderAccountView(anchor){
         <a href="https://wa.me/919263533988" target="_blank" rel="noopener" class="py-3 rounded-full btn-ghost text-white text-[13.5px] font-medium text-center">Contact Support</a>
         <button onclick="logout()" class="py-3 rounded-full btn-ghost text-white text-[13.5px] font-medium">Logout</button>
       </div>
+      <p class="mt-5 text-center text-[12px] text-[var(--ink-2)]"><a href="/account-deletion.html" class="text-[var(--indigo-0)] hover:underline">Request account deletion</a></p>
     </div>
   </section>`;
 }
@@ -3100,6 +3108,15 @@ function lcCls(){ if(!window.__lcDone){ if(!window.__lcT) window.__lcT=setTimeou
     h.style.setProperty('--ht-ry', (-y*10).toFixed(2)+'deg');
   }, {passive:true});
 })();
+</script>
+<script>
+  // The worker only provides an offline fallback for public navigation. It never
+  // caches API, account, booking, authentication, or payment responses.
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('/service-worker.js').catch(function () {});
+    });
+  }
 </script>
 </body>
 </html>
