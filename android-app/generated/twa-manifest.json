@@ -1,0 +1,65 @@
+{
+    "packageId":  "com.hometech.services",
+    "host":  "home-tech.pages.dev",
+    "name":  "Home-Tech Services",
+    "launcherName":  "Home-Tech",
+    "display":  "standalone",
+    "themeColor":  "#090B12",
+    "themeColorDark":  "#000000",
+    "navigationColor":  "#000000",
+    "navigationColorDark":  "#000000",
+    "navigationDividerColor":  "#000000",
+    "navigationDividerColorDark":  "#000000",
+    "backgroundColor":  "#090B12",
+    "enableNotifications":  false,
+    "startUrl":  "/",
+    "iconUrl":  "https://home-tech.pages.dev/assets/pwa/icon-512.png",
+    "maskableIconUrl":  "https://home-tech.pages.dev/assets/pwa/icon-maskable-512.png",
+    "splashScreenFadeOutDuration":  300,
+    "signingKey":  {
+                       "path":  "C:\\Users\\sunny\\Home-Tech-keys\\hometech-release.keystore",
+                       "alias":  "hometech"
+                   },
+    "appVersionName":  "2",
+    "appVersionCode":  2,
+    "shortcuts":  [
+
+                  ],
+    "generatorApp":  "bubblewrap-cli",
+    "webManifestUrl":  "https://home-tech.pages.dev/manifest.webmanifest",
+    "fallbackType":  "customtabs",
+    "features":  {
+                     "locationDelegation":  {
+                                                "enabled":  true
+                                            }
+                 },
+    "alphaDependencies":  {
+                              "enabled":  false
+                          },
+    "enableSiteSettingsShortcut":  true,
+    "isChromeOSOnly":  false,
+    "isMetaQuest":  false,
+    "fullScopeUrl":  "https://home-tech.pages.dev/",
+    "minSdkVersion":  24,
+    "orientation":  "portrait",
+    "fingerprints":  [
+                         "30:D6:00:7C:BA:0A:79:7E:30:35:F3:DE:FB:AD:A3:F3:09:06:8A:06:97:C9:19:FE:EF:41:76:3D:73:3B:80:47"
+                     ],
+    "additionalTrustedOrigins":  [
+
+                                 ],
+    "retainedBundles":  [
+
+                        ],
+    "protocolHandlers":  [
+
+                         ],
+    "fileHandlers":  [
+
+                     ],
+    "launchHandlerClientMode":  "",
+    "displayOverride":  [
+
+                        ],
+    "appVersion":  "2"
+}

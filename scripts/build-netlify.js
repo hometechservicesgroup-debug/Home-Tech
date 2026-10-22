@@ -40,6 +40,12 @@ for (const page of ['privacy-policy.html', 'terms-and-conditions.html', 'partner
 fs.cpSync(path.join(root, 'assets'), path.join(out, 'assets'), { recursive: true });
 fs.copyFileSync(path.join(root, 'manifest.webmanifest'), path.join(out, 'manifest.webmanifest'));
 fs.copyFileSync(path.join(root, 'service-worker.js'), path.join(out, 'service-worker.js'));
+// Digital Asset Links verifies that the Android package is allowed to open this
+// Cloudflare Pages origin as a Trusted Web Activity.
+const assetLinksDir = path.join(root, '.well-known');
+if (fs.existsSync(assetLinksDir)) {
+  fs.cpSync(assetLinksDir, path.join(out, '.well-known'), { recursive: true });
+}
 // Google Search Console needs this file at the public site root on every host.
 fs.copyFileSync(
   path.join(root, 'google422ff58121bc039d.html'),

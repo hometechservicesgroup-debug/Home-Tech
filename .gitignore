@@ -15,3 +15,10 @@ backend/bookings.json
 backend/otp-limits.json
 backend/partners.json
 backend/sessions.json
+
+# Android build output (the generated Android source itself is versioned)
+android-app/generated/.gradle/
+android-app/generated/app/build/
+android-app/generated/build/
+
+android-app/generated/local.properties

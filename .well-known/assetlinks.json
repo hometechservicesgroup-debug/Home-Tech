@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.hometech.services",
+      "sha256_cert_fingerprints": [
+        "30:D6:00:7C:BA:0A:79:7E:30:35:F3:DE:FB:AD:A3:F3:09:06:8A:06:97:C9:19:FE:EF:41:76:3D:73:3B:80:47"
+      ]
+    }
+  }
+]
