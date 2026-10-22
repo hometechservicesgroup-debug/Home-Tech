@@ -1,5 +1,5 @@
 {
-  "packageId": "__ANDROID_APPLICATION_ID__",
+  "packageId": "com.hometech.services",
   "host": "home-tech.pages.dev",
   "name": "Home-Tech Services",
   "launcherName": "Home-Tech",
@@ -8,5 +8,7 @@
   "navigationColor": "#090b12",
   "startUrl": "https://home-tech.pages.dev/",
   "iconUrl": "https://home-tech.pages.dev/assets/pwa/icon-512.png",
-  "splashScreenFadeOutDuration": 300
+  "splashScreenFadeOutDuration": 300,
+  "appVersionCode": 1,
+  "appVersionName": "1.0.0"
 }

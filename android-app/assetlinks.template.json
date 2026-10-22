@@ -3,7 +3,7 @@
     "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
-      "package_name": "__ANDROID_APPLICATION_ID__",
+      "package_name": "com.hometech.services",
       "sha256_cert_fingerprints": ["__RELEASE_SIGNING_SHA256__"]
     }
   }
